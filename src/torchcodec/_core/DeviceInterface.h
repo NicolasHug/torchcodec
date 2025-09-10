@@ -88,7 +88,8 @@ class DeviceInterface {
   // Receive decoded frame (non-blocking) 
   // Returns 0 on success, AVERROR(EAGAIN) if no frame ready, AVERROR_EOF if end of stream,
   // or other AVERROR on failure
-  virtual int receiveFrame(UniqueAVFrame& /* frame */) {
+  // If desiredPts is specified (not AV_NOPTS_VALUE), looks for exact PTS match
+  virtual int receiveFrame(UniqueAVFrame& /* frame */, int64_t /* desiredPts */ = AV_NOPTS_VALUE) {
     TORCH_CHECK(
         false,
         "Send/receive packet decoding not implemented for this device interface");

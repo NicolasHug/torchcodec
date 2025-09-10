@@ -119,7 +119,8 @@ class CustomNvdecDeviceInterface : public DeviceInterface {
   // Receive decoded frame (non-blocking) 
   // Returns 0 on success, AVERROR(EAGAIN) if no frame ready, AVERROR_EOF if end of stream,
   // or other AVERROR on failure
-  int receiveFrame(UniqueAVFrame& frame);
+  // If desiredPts is specified (not AV_NOPTS_VALUE), looks for exact PTS match
+  int receiveFrame(UniqueAVFrame& frame, int64_t desiredPts = AV_NOPTS_VALUE);
 
   // Flush remaining frames from decoder
   void flush();
@@ -155,9 +156,9 @@ class CustomNvdecDeviceInterface : public DeviceInterface {
   std::vector<BufferedFrame> frameBuffer_;
   std::mutex frameBufferMutex_;
 
-  // PTS priority queue for proper packet-to-frame mapping (like DALI)
-  // Using min-heap to efficiently get smallest PTS
-  std::priority_queue<int64_t, std::vector<int64_t>, std::greater<int64_t>> pipedPts_;
+  // PTS queue for packet-to-frame mapping in decode order
+  // Using regular queue to preserve packet order
+  std::queue<int64_t> pipedPts_;
 
   // Decode surface tracking (like DALI's frame_in_use_)
   std::vector<uint8_t> surfaceInUse_;
@@ -186,6 +187,7 @@ class CustomNvdecDeviceInterface : public DeviceInterface {
   // Helper methods for frame reordering
   BufferedFrame* findEmptySlot();
   BufferedFrame* findFrameWithEarliestPts();
+  BufferedFrame* findFrameWithExactPts(int64_t desiredPts);
   
   // Helper method to calculate frame duration in timebase units
   int64_t calculateFrameDuration() const;
