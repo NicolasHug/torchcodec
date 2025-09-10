@@ -431,57 +431,22 @@ int CustomNvdecDeviceInterface::handlePictureDecode(
   dispInfo.repeat_first_field = 0;
   
   
-  // Efficient PTS assignment using min-heap priority queue with incremental PTS for multi-frame packets
-  // Always assign the smallest (earliest) PTS from the queue
-  // This handles cases where queue gets out of sync due to B-frame reordering
-  if (!pipedPts_.empty()) {
-    // Get the smallest PTS (top of min-heap) - O(1)
-    currentPts_ = pipedPts_.top();
-    // Remove it from the queue - O(log n)
-    pipedPts_.pop();
-    
-    // This is the first frame from a new packet - reset frame index and set base PTS
-    basePts_ = currentPts_;
-    frameIndexInPacket_ = 0;
-    
-  } else {
-    // Handle case where one packet produces multiple frames
-    // Assign incremental PTS values based on frame duration
-    frameIndexInPacket_++;
-  }
-  
-  // Calculate PTS based on frame order
-  int64_t frameDuration = calculateFrameDuration();
+  // Simple PTS assignment: use the PTS directly from the packet queue in FIFO order
+  // Each decoded frame gets the PTS from the corresponding packet in decode order
   int64_t framePts;
-  
-  if (videoFormat_.codec == cudaVideoCodec_AV1) {
-    // For AV1, calculate PTS index based on frame_offset to ensure proper temporal ordering
-    // Smaller frame_offset should get earlier (smaller) PTS
-    int64_t currentFrameOffset = pPicParams->CodecSpecific.av1.frame_offset;
-    
-    // Simple mapping: use frame_offset to determine PTS order
-    // Since frame_offset is typically a power of 2 sequence in reverse order,
-    // we can use a simple formula to get the PTS index
-    int ptsIndex = 0;
-    int64_t tempOffset = currentFrameOffset;
-    
-    // Count the number of times we can divide by 2 to get the reverse index
-    while (tempOffset > 1) {
-      tempOffset >>= 1;  // Divide by 2
-      ptsIndex++;
-    }
-    
-    // Map frame_offset to PTS index: smaller frame_offset gets smaller PTS
-    // For frame_offsets 16,8,4,2,1 we want PTS indices 4,3,2,1,0 
-    // so that frame_offset=1 gets PTS index=0 (earliest PTS)
-    framePts = basePts_ + (ptsIndex * frameDuration);
+  if (!pipedPts_.empty()) {
+    // Get the next PTS from the front of the queue (FIFO order)
+    framePts = pipedPts_.front();
+    pipedPts_.pop();
   } else {
-    // For non-AV1 codecs, use simple increment
-    framePts = basePts_ + (frameIndexInPacket_ * frameDuration);
+    // This shouldn't happen in normal operation - each frame should have a corresponding packet PTS
+    framePts = AV_NOPTS_VALUE;
   }
   
 #if CUSTOM_NVDEC_DEBUG
-  std::cout << "[DEBUG]   Assigned PTS=" << framePts << " to picture_index " << dispInfo.picture_index << std::endl;
+  std::cout << "[DEBUG]   handlePictureDecode: picture_index=" << dispInfo.picture_index 
+            << ", assigned PTS=" << framePts
+            << ", frame_type=" << (pPicParams->intra_pic_flag ? "I" : (pPicParams->ref_pic_flag ? "P" : "B")) << std::endl;
   printPtsQueue("after PTS assignment");
 #endif
   
@@ -492,7 +457,7 @@ int CustomNvdecDeviceInterface::handlePictureDecode(
   std::lock_guard<std::mutex> lock(frameBufferMutex_);
   BufferedFrame* slot = findEmptySlot();
   slot->dispInfo = dispInfo;
-  slot->pts = framePts;  // Use the PTS we just assigned
+  slot->pts = framePts;
   
   // Store frame_offset for AV1 tie-breaking
   if (videoFormat_.codec == cudaVideoCodec_AV1) {
@@ -561,7 +526,7 @@ int CustomNvdecDeviceInterface::sendPacket(ReferenceAVPacket& packet) {
   return 0;
 }
 
-int CustomNvdecDeviceInterface::receiveFrame(UniqueAVFrame& frame) {
+int CustomNvdecDeviceInterface::receiveFrame(UniqueAVFrame& frame, int64_t desiredPts) {
 
 #if CUSTOM_NVDEC_DEBUG
   std::cout << "[DEBUG] receiveFrame: Called" << std::endl;
@@ -573,30 +538,48 @@ int CustomNvdecDeviceInterface::receiveFrame(UniqueAVFrame& frame) {
   printFrameBuffer("receiveFrame start");
 #endif
   
-  // Find frame with earliest PTS for display order (like DALI)
-  BufferedFrame* earliestFrame = findFrameWithEarliestPts();
+  // Choose frame selection strategy based on whether we have a desired PTS
+  BufferedFrame* selectedFrame = nullptr;
   
-  if (earliestFrame == nullptr) {
+  if (desiredPts != AV_NOPTS_VALUE) {
+    // Look for exact PTS match first
+    selectedFrame = findFrameWithExactPts(desiredPts);
+    if (selectedFrame == nullptr) {
+      // No exact match found, return EAGAIN to indicate we need more frames
 #if CUSTOM_NVDEC_DEBUG
-    std::cout << "[DEBUG] receiveFrame: No frames available, returning " << (eofSent_ ? "AVERROR_EOF" : "AVERROR(EAGAIN)") << std::endl;
+      std::cout << "[DEBUG] receiveFrame: No exact PTS match found for " << desiredPts << ", returning AVERROR(EAGAIN)" << std::endl;
 #endif
-    if (eofSent_) {
-      return AVERROR_EOF;
-    } else {
       return AVERROR(EAGAIN);
+    } else {
+#if CUSTOM_NVDEC_DEBUG
+      std::cout << "[DEBUG] receiveFrame: Found exact PTS match for " << desiredPts << std::endl;
+#endif
+    }
+  } else {
+    // Fall back to earliest frame behavior (for approximate seek mode)
+    selectedFrame = findFrameWithEarliestPts();
+    if (selectedFrame == nullptr) {
+#if CUSTOM_NVDEC_DEBUG
+      std::cout << "[DEBUG] receiveFrame: No frames available, returning " << (eofSent_ ? "AVERROR_EOF" : "AVERROR(EAGAIN)") << std::endl;
+#endif
+      if (eofSent_) {
+        return AVERROR_EOF;
+      } else {
+        return AVERROR(EAGAIN);
+      }
     }
   }
 
-  CUVIDPARSERDISPINFO dispInfo = earliestFrame->dispInfo;
-  int64_t pts = earliestFrame->pts;
+  CUVIDPARSERDISPINFO dispInfo = selectedFrame->dispInfo;
+  int64_t pts = selectedFrame->pts;
   
 #if CUSTOM_NVDEC_DEBUG
-  std::cout << "[DEBUG] receiveFrame: Returning frame with PTS=" << pts << ", frame_offset=" << earliestFrame->frame_offset << ", picture_index=" << dispInfo.picture_index << std::endl;
+  std::cout << "[DEBUG] receiveFrame: Returning frame with PTS=" << pts << ", frame_offset=" << selectedFrame->frame_offset << ", picture_index=" << dispInfo.picture_index << std::endl;
 #endif
   
   // Mark slot as used
-  earliestFrame->available = false;
-  earliestFrame->pts = -1;
+  selectedFrame->available = false;
+  selectedFrame->pts = -1;
 
 
   // Now map the frame (this was previously done in handlePictureDisplay)
@@ -886,6 +869,17 @@ CustomNvdecDeviceInterface::findFrameWithEarliestPts() {
   return earliest;
 }
 
+// Helper method to find frame with exact PTS match
+CustomNvdecDeviceInterface::BufferedFrame* 
+CustomNvdecDeviceInterface::findFrameWithExactPts(int64_t desiredPts) {
+  for (auto& frame : frameBuffer_) {
+    if (frame.available && frame.pts == desiredPts) {
+      return &frame;
+    }
+  }
+  return nullptr;
+}
+
 // Helper method to calculate frame duration in timebase units
 int64_t CustomNvdecDeviceInterface::calculateFrameDuration() const {
   // Calculate frame duration from NVDEC frame rate, fallback frame rate, and stream timebase
@@ -926,21 +920,16 @@ void CustomNvdecDeviceInterface::printPtsQueue(const std::string& context) const
   }
   
   std::cout << "[DEBUG] " << indent << "PTS Queue (" << context << "): [";
-  // Priority queue doesn't support iteration, so we make a copy to print contents
+  // Regular queue doesn't support iteration, so we make a copy to print contents
   auto tempQueue = pipedPts_;
-  std::vector<int64_t> queueContents;
-  while (!tempQueue.empty()) {
-    queueContents.push_back(tempQueue.top());
-    tempQueue.pop();
-  }
-  // Print in sorted order (smallest to largest)
   bool first = true;
-  for (int64_t pts : queueContents) {
+  while (!tempQueue.empty()) {
     if (!first) std::cout << ", ";
-    std::cout << pts;
+    std::cout << tempQueue.front();
+    tempQueue.pop();
     first = false;
   }
-  std::cout << "] (size: " << pipedPts_.size() << ", min: " << (pipedPts_.empty() ? "N/A" : std::to_string(pipedPts_.top())) << ")" << std::endl;
+  std::cout << "] (size: " << pipedPts_.size() << ", front: " << (pipedPts_.empty() ? "N/A" : std::to_string(pipedPts_.front())) << ")" << std::endl;
 }
 
 void CustomNvdecDeviceInterface::printFrameBuffer(const std::string& context) const {

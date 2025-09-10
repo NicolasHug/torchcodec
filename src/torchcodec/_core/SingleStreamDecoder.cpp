@@ -1205,7 +1205,9 @@ UniqueAVFrame SingleStreamDecoder::decodeAVFrame(
   if (deviceInterface_ && deviceInterface_->canDecodePacketDirectly()) {
     while (true) {
       // Try to receive a frame first (similar to avcodec_receive_frame)
-      status = deviceInterface_->receiveFrame(avFrame);
+      // Pass desired PTS for exact matching when not in approximate mode
+      int64_t desiredPts = (seekMode_ == SeekMode::approximate) ? AV_NOPTS_VALUE : cursor_;
+      status = deviceInterface_->receiveFrame(avFrame, desiredPts);
 
       if (status != 0 && status != AVERROR(EAGAIN)) {
         // Non-retriable error or EOF
