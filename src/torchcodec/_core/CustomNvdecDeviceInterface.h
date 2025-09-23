@@ -163,12 +163,6 @@ class CustomNvdecDeviceInterface : public DeviceInterface {
   // Current PTS being processed (like DALI's current_pts_)
   int64_t currentPts_ = AV_NOPTS_VALUE;
   
-  // Base PTS for current packet (when packet produces multiple frames)
-  int64_t basePts_ = AV_NOPTS_VALUE;
-  
-  // Frame index within current packet (for incremental PTS calculation)
-  int frameIndexInPacket_ = 0;
-  
   // Flush flag to prevent decode operations during flush (like DALI's flush_)
   bool flush_ = false;
   

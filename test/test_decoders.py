@@ -1418,7 +1418,7 @@ class TestVideoDecoder:
     @needs_cuda
     @pytest.mark.parametrize("asset", (NASA_VIDEO, TEST_SRC_2_720P, BT709_FULL_RANGE))
     @pytest.mark.parametrize("contiguous_indices", (True, False))
-    def test_custom_nvdec_interface(self, asset, contiguous_indices):
+    def test_custom_nvdec_interface_get_frame_at(self, asset, contiguous_indices):
         ref_decoder = VideoDecoder(asset.path, device="cuda")
         beta_decoder = VideoDecoder(asset.path, device="cuda:0:custom_nvdec")
 
@@ -1436,6 +1436,29 @@ class TestVideoDecoder:
 
             assert beta_frame.pts_seconds == ref_frame.pts_seconds
             assert beta_frame.duration_seconds == ref_frame.duration_seconds
+
+    @needs_cuda
+    @pytest.mark.parametrize("asset", (NASA_VIDEO, TEST_SRC_2_720P, BT709_FULL_RANGE))
+    @pytest.mark.parametrize("contiguous_indices", (True, False))
+    def test_custom_nvdec_interface_get_frames_at(self, asset, contiguous_indices):
+        ref_decoder = VideoDecoder(asset.path, device="cuda")
+        beta_decoder = VideoDecoder(asset.path, device="cuda:0:custom_nvdec")
+
+        assert ref_decoder.metadata == beta_decoder.metadata
+
+        if contiguous_indices:
+            indices = range(len(ref_decoder))
+        else:
+            indices = range(0, len(ref_decoder), 10)
+        indices = list(indices)
+
+        ref_frames = ref_decoder.get_frames_at(indices)
+        beta_frames = beta_decoder.get_frames_at(indices)
+        torch.testing.assert_close(beta_frames.data, ref_frames.data, rtol=0, atol=0)
+        torch.testing.assert_close(beta_frames.pts_seconds, ref_frames.pts_seconds)
+        torch.testing.assert_close(beta_frames.duration_seconds, ref_frames.duration_seconds)
+
+
 
 
 class TestAudioDecoder:

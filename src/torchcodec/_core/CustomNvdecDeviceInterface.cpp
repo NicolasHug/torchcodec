@@ -188,12 +188,6 @@ CustomNvdecDeviceInterface::CustomNvdecDeviceInterface(
   // Initialize frame buffer for B-frame reordering
   // TODONVDEC: init size should probably be min_num_decode_surfaces from video format
   frameBuffer_.resize(4);
-  
-  
-  // Initialize PTS tracking for multi-frame packets
-  basePts_ = AV_NOPTS_VALUE;
-  frameIndexInPacket_ = 0;
-  
 }
 
 CustomNvdecDeviceInterface::~CustomNvdecDeviceInterface() {
@@ -443,12 +437,10 @@ int CustomNvdecDeviceInterface::receiveFrame(UniqueAVFrame& frame, int64_t desir
   CUVIDPARSERDISPINFO dispInfo = selectedFrame->dispInfo;
   int64_t pts = selectedFrame->pts;
   
-  // Mark slot as used
   selectedFrame->available = false;
   selectedFrame->pts = -1;
 
 
-  // Now map the frame (this was previously done in handlePictureDisplay)
   CUdeviceptr framePtr = 0;
   unsigned int pitch = 0;
   CUVIDPROCPARAMS procParams = {};
@@ -522,9 +514,6 @@ void CustomNvdecDeviceInterface::flush() {
   // Reset current PTS like DALI does
   currentPts_ = AV_NOPTS_VALUE;
   
-  // Reset PTS tracking for multi-frame packets
-  basePts_ = AV_NOPTS_VALUE;
-  frameIndexInPacket_ = 0;
 
   // Reset EOF flag so we can decode more (like DALI does)
   eofSent_ = false;
