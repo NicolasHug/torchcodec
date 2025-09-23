@@ -183,8 +183,6 @@ class CustomNvdecDeviceInterface : public DeviceInterface {
   BufferedFrame* findFrameWithEarliestPts();
   BufferedFrame* findFrameWithExactPts(int64_t desiredPts);
   
-  // Helper method to calculate frame duration in timebase units
-  int64_t calculateFrameDuration() const;
   
 
   // Initialize video parser

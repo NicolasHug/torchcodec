@@ -749,32 +749,4 @@ CustomNvdecDeviceInterface::findFrameWithExactPts(int64_t desiredPts) {
   return nullptr;
 }
 
-// Helper method to calculate frame duration in timebase units
-int64_t CustomNvdecDeviceInterface::calculateFrameDuration() const {
-  // Calculate frame duration from NVDEC frame rate, fallback frame rate, and stream timebase
-  AVRational effectiveFrameRate = {0, 0};
-  
-  // First try NVDEC frame rate
-  if (videoFormat_.frame_rate.numerator > 0 && videoFormat_.frame_rate.denominator > 0) {
-    effectiveFrameRate.num = videoFormat_.frame_rate.numerator;
-    effectiveFrameRate.den = videoFormat_.frame_rate.denominator;
-  } 
-  // Fallback to FFmpeg frame rate if NVDEC frame rate is unavailable
-  else if (fallbackFrameRate_.num > 0 && fallbackFrameRate_.den > 0) {
-    effectiveFrameRate = fallbackFrameRate_;
-  }
-  
-  if (effectiveFrameRate.num > 0 && effectiveFrameRate.den > 0 &&
-      timeBase_.num > 0 && timeBase_.den > 0) {
-    // Duration in seconds = frame_rate.den / frame_rate.num
-    // Duration in timebase units = (duration_seconds * timeBase.den) / timeBase.num
-    // = (frame_rate.den * timeBase.den) / (frame_rate.num * timeBase.num)
-    return (int64_t)((effectiveFrameRate.den * timeBase_.den) / 
-                     (effectiveFrameRate.num * timeBase_.num));
-  }
-  
-  // If we can't calculate duration, return 0
-  return 0;
-}
-
 } // namespace facebook::torchcodec
