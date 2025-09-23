@@ -38,6 +38,7 @@ NVDECCache& NVDECCache::GetCache(int device_id) {
 
 NVDECDecoderKey NVDECCache::createKey(CUVIDEOFORMAT* video_format) {
   unsigned num_decode_surfaces = video_format->min_num_decode_surfaces;
+
   if (num_decode_surfaces == 0) {
     num_decode_surfaces = 20;  // Default fallback
   }
@@ -94,6 +95,15 @@ UniqueCUvideodecoder NVDECCache::createDecoder(CUVIDEOFORMAT* video_format) {
   if (num_decode_surfaces == 0) {
     num_decode_surfaces = 20;
   }
+  #if CUSTOM_NVDEC_DEBUG
+  std::cout << "[DEBUG] Creating new NVDEC decoder: "
+            << "Codec=" << static_cast<int>(codec_type)
+            << ", Size=" << width << "x" << height
+            << ", Chroma=" << static_cast<int>(chroma_format)
+            << ", BitDepth=" << (bit_depth_luma_minus8 + 8)
+            << ", Surfaces=" << static_cast<int>(num_decode_surfaces)
+            << std::endl;
+  #endif
   
   // Check decoder capabilities
   auto caps = CUVIDDECODECAPS{};
@@ -193,8 +203,8 @@ CustomNvdecDeviceInterface::CustomNvdecDeviceInterface(
   
   // Initialize frame buffer for B-frame reordering
   // TODONVDEC tune default size. Is this even supposed to be MAX_DECODE_SURFACES?
-  frameBuffer_.resize(MAX_DECODE_SURFACES);
-  // frameBuffer_.resize(4);
+  // frameBuffer_.resize(MAX_DECODE_SURFACES);
+  frameBuffer_.resize(4);
   
   
   // Initialize PTS tracking for multi-frame packets
@@ -249,18 +259,6 @@ void CustomNvdecDeviceInterface::initializeContext(
   switch (codecContext->codec_id) {
     case AV_CODEC_ID_H264:
       nvCodec = cudaVideoCodec_H264;
-      break;
-    case AV_CODEC_ID_HEVC:
-      nvCodec = cudaVideoCodec_HEVC;
-      break;
-    case AV_CODEC_ID_AV1:
-      nvCodec = cudaVideoCodec_AV1;
-      break;
-    case AV_CODEC_ID_VP8:
-      nvCodec = cudaVideoCodec_VP8;
-      break;
-    case AV_CODEC_ID_VP9:
-      nvCodec = cudaVideoCodec_VP9;
       break;
     default:
       TORCH_CHECK(
@@ -377,7 +375,7 @@ int CustomNvdecDeviceInterface::handlePictureDecode(
   }
 
   std::cout << "[DEBUG] handlePictureDecode: Called for surface " << pPicParams->CurrPicIdx
-            << ", type=" << picTypeStr << ", frame_offset=" << pPicParams->CodecSpecific.av1.frame_offset << std::endl;
+            << ", type=" << picTypeStr << std::endl;
 #endif
 
   // Like DALI: if we're flushing, don't process new decode operations
@@ -418,9 +416,9 @@ int CustomNvdecDeviceInterface::handlePictureDecode(
     framePts = pipedPts_.front();
     pipedPts_.pop();
   } else {
-    // This shouldn't happen in normal operation - each frame should have a corresponding packet PTS
-    framePts = AV_NOPTS_VALUE;
+    framePts = currentPts_; // Fallback to last known PTS if queue is empty
   }
+  currentPts_ = framePts;
   
 #if CUSTOM_NVDEC_DEBUG
   std::cout << "[DEBUG]   handlePictureDecode: picture_index=" << dispInfo.picture_index 
@@ -438,12 +436,6 @@ int CustomNvdecDeviceInterface::handlePictureDecode(
   slot->dispInfo = dispInfo;
   slot->pts = framePts;
   
-  // Store frame_offset for AV1 tie-breaking
-  if (videoFormat_.codec == cudaVideoCodec_AV1) {
-    slot->frame_offset = pPicParams->CodecSpecific.av1.frame_offset;
-  } else {
-    slot->frame_offset = 0;  // Not applicable for non-AV1 codecs
-  }
   
   slot->available = true;
   
@@ -573,7 +565,7 @@ int CustomNvdecDeviceInterface::receiveFrame(UniqueAVFrame& frame, int64_t desir
   int64_t pts = selectedFrame->pts;
   
 #if CUSTOM_NVDEC_DEBUG
-  std::cout << "[DEBUG] receiveFrame: Returning frame with PTS=" << pts << ", frame_offset=" << selectedFrame->frame_offset << ", picture_index=" << dispInfo.picture_index << std::endl;
+  std::cout << "[DEBUG] receiveFrame: Returning frame with PTS=" << pts << ", picture_index=" << dispInfo.picture_index << std::endl;
 #endif
   
   // Mark slot as used
@@ -835,7 +827,6 @@ CustomNvdecDeviceInterface::findEmptySlot() {
 }
 
 // Helper method to find frame with earliest PTS for display order
-// For AV1 codecs, uses frame_offset as tie-breaker when PTS values are equal
 CustomNvdecDeviceInterface::BufferedFrame* 
 CustomNvdecDeviceInterface::findFrameWithEarliestPts() {
   BufferedFrame* earliest = nullptr;
@@ -844,15 +835,8 @@ CustomNvdecDeviceInterface::findFrameWithEarliestPts() {
     if (frame.available) {
       if (earliest == nullptr || frame.pts < earliest->pts) {
         earliest = &frame;
-      } else if (frame.pts == earliest->pts) {
-        // Tie-breaker: for AV1 codecs, prefer smaller frame_offset
-        if (videoFormat_.codec == cudaVideoCodec_AV1) {
-          if (frame.frame_offset < earliest->frame_offset) {
-            earliest = &frame;
-          }
-        }
-        // For non-AV1 codecs, keep the first one found (existing behavior)
       }
+      // For equal PTS values, keep the first one found (no action needed)
     }
   }
   
@@ -936,7 +920,7 @@ void CustomNvdecDeviceInterface::printFrameBuffer(const std::string& context) co
   for (size_t i = 0; i < frameBuffer_.size(); ++i) {
     if (!first) std::cout << ", ";
     if (frameBuffer_[i].available) {
-      std::cout << "{slot:" << i << ", pts:" << frameBuffer_[i].pts << ", offset:" << frameBuffer_[i].frame_offset << ", avail:true}";
+      std::cout << "{slot:" << i << ", pts:" << frameBuffer_[i].pts << ", avail:true}";
     } else {
       std::cout << "{slot:" << i << ", pts:N/A, offset:N/A, avail:false}";
     }

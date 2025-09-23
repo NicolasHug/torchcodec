@@ -144,10 +144,9 @@ class CustomNvdecDeviceInterface : public DeviceInterface {
   struct BufferedFrame {
     CUVIDPARSERDISPINFO dispInfo;
     int64_t pts;
-    int64_t frame_offset;  // AV1 frame_offset for tie-breaking
     bool available = false;
     
-    BufferedFrame() : pts(-1), frame_offset(0), available(false) {
+    BufferedFrame() : pts(-1), available(false) {
       memset(&dispInfo, 0, sizeof(dispInfo));
     }
   };
