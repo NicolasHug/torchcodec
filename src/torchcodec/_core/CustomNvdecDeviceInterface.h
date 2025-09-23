@@ -108,18 +108,14 @@ class CustomNvdecDeviceInterface : public DeviceInterface {
     return true;
   }
 
-  // New send/receive API (FFmpeg-style)
-  // Send packet for decoding (non-blocking)
   // Returns 0 on success, AVERROR(EAGAIN) if decoder queue full, or other AVERROR on failure
   int sendPacket(ReferenceAVPacket& packet);
 
   // Receive decoded frame (non-blocking) 
   // Returns 0 on success, AVERROR(EAGAIN) if no frame ready, AVERROR_EOF if end of stream,
   // or other AVERROR on failure
-  // If desiredPts is specified (not AV_NOPTS_VALUE), looks for exact PTS match
-  int receiveFrame(UniqueAVFrame& frame, int64_t desiredPts = AV_NOPTS_VALUE);
+  int receiveFrame(UniqueAVFrame& frame, int64_t desiredPts);
 
-  // Flush remaining frames from decoder
   void flush();
 
  public:
@@ -131,37 +127,31 @@ class CustomNvdecDeviceInterface : public DeviceInterface {
   // NVDEC decoder context and parser
   CUvideoparser videoParser_ = nullptr;
   UniqueCUvideodecoder decoder_;
-  NVDECDecoderKey decoderKey_; // Store key for return to cache
+  NVDECDecoderKey decoderKey_;
 
   // Video format info
   CUVIDEOFORMAT videoFormat_;
   bool parserCreated_ = false;
 
-  // Frame buffer for B-frame reordering (like DALI)
-  struct BufferedFrame {
+  struct FrameBufferSlot {
     CUVIDPARSERDISPINFO dispInfo;
     int64_t pts;
-    bool available = false;
-    
-    BufferedFrame() : pts(-1), available(false) {
+    bool occupied = false;
+
+    FrameBufferSlot() : pts(-1), occupied(false) {
       memset(&dispInfo, 0, sizeof(dispInfo));
     }
   };
   
   static constexpr int MAX_DECODE_SURFACES = 32; // NVDEC max
-  std::vector<BufferedFrame> frameBuffer_;
+  std::vector<FrameBufferSlot> frameBuffer_;
   std::mutex frameBufferMutex_;
 
-  // PTS queue for packet-to-frame mapping in decode order
-  // Using regular queue to preserve packet order
-  std::queue<int64_t> pipedPts_;
+  std::queue<int64_t> packetsPtsQueue;
 
 
   // EOF tracking
   bool eofSent_ = false;
-  
-  // Current PTS being processed (like DALI's current_pts_)
-  int64_t currentPts_ = AV_NOPTS_VALUE;
   
   // Flush flag to prevent decode operations during flush (like DALI's flush_)
   bool flush_ = false;
@@ -173,8 +163,8 @@ class CustomNvdecDeviceInterface : public DeviceInterface {
   AVRational fallbackFrameRate_ = {0, 0};
 
   // Helper methods for frame reordering
-  BufferedFrame* findEmptySlot();
-  BufferedFrame* findFrameWithExactPts(int64_t desiredPts);
+  FrameBufferSlot* findEmptySlot();
+  FrameBufferSlot* findFrameWithExactPts(int64_t desiredPts);
   
   
 

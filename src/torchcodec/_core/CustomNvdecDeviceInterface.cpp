@@ -194,9 +194,9 @@ CustomNvdecDeviceInterface::~CustomNvdecDeviceInterface() {
   // Clean up any remaining frames in the buffer
   {
     std::lock_guard<std::mutex> lock(frameBufferMutex_);
-    for (auto& frame : frameBuffer_) {
-      frame.available = false;
-      frame.pts = -1;
+    for (auto& slot : frameBuffer_) {
+      slot.occupied = false;
+      slot.pts = -1;
     }
   }
 
@@ -344,18 +344,11 @@ int CustomNvdecDeviceInterface::handlePictureDecode(
   TORCH_CHECK(
       decoder_, "Decoder not initialized before picture decode");
 
-
-
-  // Doc say that calling cuvidDecodePicture kicks of the hardware decoding of the frame (async!).
-  // We know the frame was successfully decoded when cuvidMapVideoFrame returns
-  // successfully.
-  // https://docs.nvidia.com/video-technologies/video-codec-sdk/13.0/nvdec-video-decoder-api-prog-guide/index.html#preparing-the-decoded-frame-for-further-processing
   CUresult result = cuvidDecodePicture(static_cast<CUvideodecoder>(decoder_.get()), pPicParams);
   
   if (result != CUDA_SUCCESS) {
     return 0;
   }
-  
   
   // Like DALI: manually create display info and handle picture display directly
   CUVIDPARSERDISPINFO dispInfo = {};
@@ -364,30 +357,25 @@ int CustomNvdecDeviceInterface::handlePictureDecode(
   dispInfo.top_field_first = pPicParams->bottom_field_flag ^ 1;
   dispInfo.repeat_first_field = 0;
   
+  // TODONVDEC the pipe may be empty, handle that.
+  TORCH_CHECK(!packetsPtsQueue.empty(), "PTS queue is empty when decoding a frame");
   
   // Simple PTS assignment: use the PTS directly from the packet queue in FIFO order
   // Each decoded frame gets the PTS from the corresponding packet in decode order
-  int64_t framePts;
-  if (!pipedPts_.empty()) {
-    // Get the next PTS from the front of the queue (FIFO order)
-    framePts = pipedPts_.front();
-    pipedPts_.pop();
-  } else {
-    framePts = currentPts_; // Fallback to last known PTS if queue is empty
-  }
-  currentPts_ = framePts;
+  int64_t framePts = packetsPtsQueue.front();
+  packetsPtsQueue.pop();
   
   // Set the PTS in the display info
   dispInfo.timestamp = framePts;
   
   // Buffer frame for B-frame reordering (like DALI)
   std::lock_guard<std::mutex> lock(frameBufferMutex_);
-  BufferedFrame* slot = findEmptySlot();
+  FrameBufferSlot* slot = findEmptySlot();
   slot->dispInfo = dispInfo;
   slot->pts = framePts;
   
   
-  slot->available = true;
+  slot->occupied = true;
   return 1;
 }
 
@@ -407,7 +395,7 @@ int CustomNvdecDeviceInterface::sendPacket(ReferenceAVPacket& packet) {
     cudaPacket.timestamp = packet->pts;
     
     // Like DALI: store PTS in queue to assign to frames as they come out
-    pipedPts_.push(packet->pts);
+    packetsPtsQueue.push(packet->pts);
     
   } else {
     // End of stream packet
@@ -428,18 +416,17 @@ int CustomNvdecDeviceInterface::receiveFrame(UniqueAVFrame& frame, int64_t desir
   std::lock_guard<std::mutex> lock(frameBufferMutex_);
   
   
-  BufferedFrame* selectedFrame = findFrameWithExactPts(desiredPts);
-  if (selectedFrame == nullptr) {
+  FrameBufferSlot* slot = findFrameWithExactPts(desiredPts);
+  if (slot == nullptr) {
     // TODONVDEC: Need to handle case where frame buffer is full!!!!!
     return AVERROR(EAGAIN);
   } 
 
-  CUVIDPARSERDISPINFO dispInfo = selectedFrame->dispInfo;
-  int64_t pts = selectedFrame->pts;
+  CUVIDPARSERDISPINFO dispInfo = slot->dispInfo;
+  int64_t pts = slot->pts;
   
-  selectedFrame->available = false;
-  selectedFrame->pts = -1;
-
+  slot->occupied = false;
+  slot->pts = -1;
 
   CUdeviceptr framePtr = 0;
   unsigned int pitch = 0;
@@ -488,22 +475,17 @@ void CustomNvdecDeviceInterface::flush() {
   // Clear flush flag like DALI does
   flush_ = false;
 
-  // Clear frame buffer like DALI
-  size_t availableFrames = 0;
   {
     std::lock_guard<std::mutex> lock(frameBufferMutex_);
-    availableFrames = std::count_if(frameBuffer_.begin(), frameBuffer_.end(), 
-        [](const BufferedFrame& f) { return f.available; });
-    for (auto& frame : frameBuffer_) {
-      frame.available = false;
-      frame.pts = -1;
+    for (auto& slot : frameBuffer_) {
+      slot.occupied = false;
+      slot.pts = -1;
     }
   }
 
-  // Clear PTS queue like DALI
-  size_t ptsQueueSize = pipedPts_.size();
-  while (!pipedPts_.empty()) {
-    pipedPts_.pop();
+  size_t ptsQueueSize = packetsPtsQueue.size();
+  while (!packetsPtsQueue.empty()) {
+    packetsPtsQueue.pop();
   }
 
   // Synchronize CUDA stream to ensure all operations complete
@@ -511,8 +493,6 @@ void CustomNvdecDeviceInterface::flush() {
   cudaStreamSynchronize(0);
 
   
-  // Reset current PTS like DALI does
-  currentPts_ = AV_NOPTS_VALUE;
   
 
   // Reset EOF flag so we can decode more (like DALI does)
@@ -657,11 +637,11 @@ void CustomNvdecDeviceInterface::convertAVFrameToFrameOutput(
 }
 
 // Helper method to find an empty slot in frame buffer (like DALI's FindEmptySlot)
-CustomNvdecDeviceInterface::BufferedFrame* 
+CustomNvdecDeviceInterface::FrameBufferSlot* 
 CustomNvdecDeviceInterface::findEmptySlot() {
-  for (auto& frame : frameBuffer_) {
-    if (!frame.available) {
-      return &frame;
+  for (auto& slot: frameBuffer_) {
+    if (!slot.occupied) {
+      return &slot;
     }
   }
   // If no empty slots, expand buffer like DALI does
@@ -670,11 +650,11 @@ CustomNvdecDeviceInterface::findEmptySlot() {
 }
 
 // Helper method to find frame with exact PTS match
-CustomNvdecDeviceInterface::BufferedFrame* 
+CustomNvdecDeviceInterface::FrameBufferSlot* 
 CustomNvdecDeviceInterface::findFrameWithExactPts(int64_t desiredPts) {
-  for (auto& frame : frameBuffer_) {
-    if (frame.available && frame.pts == desiredPts) {
-      return &frame;
+  for (auto& slot: frameBuffer_) {
+    if (slot.occupied && slot.pts == desiredPts) {
+      return &slot;
     }
   }
   return nullptr;
