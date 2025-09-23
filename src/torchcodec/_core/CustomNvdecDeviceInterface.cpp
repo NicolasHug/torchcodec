@@ -161,7 +161,6 @@ static bool g_cuda_custom_nvdec = registerDeviceInterface(
       return new CustomNvdecDeviceInterface(device);
     });
 
-// NVDEC callback functions
 static int CUDAAPI
 HandleVideoSequence(void* pUserData, CUVIDEOFORMAT* pVideoFormat) {
   CustomNvdecDeviceInterface* decoder =
@@ -176,9 +175,6 @@ HandlePictureDecode(void* pUserData, CUVIDPICPARAMS* pPicParams) {
   return decoder->handlePictureDecode(pPicParams);
 }
 
-// HandlePictureDisplay callback removed - we now call handlePictureDisplay directly
-// from handlePictureDecode like DALI does
-
 } // namespace
 
 CustomNvdecDeviceInterface::CustomNvdecDeviceInterface(
@@ -190,8 +186,7 @@ CustomNvdecDeviceInterface::CustomNvdecDeviceInterface(
       device_.type() == torch::kCUDA, "Unsupported device: ", device_.str());
   
   // Initialize frame buffer for B-frame reordering
-  // TODONVDEC tune default size. Is this even supposed to be MAX_DECODE_SURFACES?
-  // frameBuffer_.resize(MAX_DECODE_SURFACES);
+  // TODONVDEC: init size should probably be min_num_decode_surfaces from video format
   frameBuffer_.resize(4);
   
   
@@ -228,7 +223,6 @@ CustomNvdecDeviceInterface::~CustomNvdecDeviceInterface() {
 std::optional<const AVCodec*> CustomNvdecDeviceInterface::findCodec(
     const AVCodecID& codecId) {
 
-  // TODONVDEC uhh???
   // For custom NVDEC, we bypass FFmpeg codec selection entirely
   // We'll handle the codec selection in our own NVDEC initialization
   (void)codecId; // Suppress unused parameter warning
@@ -265,10 +259,6 @@ void CustomNvdecDeviceInterface::initializeContext(
   videoFormat_.bit_depth_luma_minus8 = 0;
   videoFormat_.bit_depth_chroma_minus8 = 0;
 
-  // TODONVDEC: The nvdec docs clearly state that the CUvideoparser is an
-  // optional component, and that we could just rely on FFMpeg instead:
-  // https://docs.nvidia.com/video-technologies/video-codec-sdk/13.0/nvdec-video-decoder-api-prog-guide/index.html#video-decoder-pipeline.
-  // The tradeoff is unclear to me ATM.
   createVideoParser();
 }
 
@@ -440,46 +430,15 @@ int CustomNvdecDeviceInterface::sendPacket(ReferenceAVPacket& packet) {
 }
 
 int CustomNvdecDeviceInterface::receiveFrame(UniqueAVFrame& frame, int64_t desiredPts) {
-
   
   std::lock_guard<std::mutex> lock(frameBufferMutex_);
   
   
-  // Choose frame selection strategy based on whether we have a desired PTS
-  BufferedFrame* selectedFrame = nullptr;
-  
-  if (desiredPts != AV_NOPTS_VALUE) {
-    // Look for exact PTS match first
-    selectedFrame = findFrameWithExactPts(desiredPts);
-    if (selectedFrame == nullptr) {
-      // No exact match found, but check if buffer is getting full
-      // If so, consume earliest frame to free up decode surfaces (like DALI does)
-      int availableFrames = 0;
-      for (const auto& frame : frameBuffer_) {
-        if (frame.available) availableFrames++;
-      }
-      
-      if (availableFrames >= MAX_DECODE_SURFACES) { // Buffer is getting full, free up space
-        selectedFrame = findFrameWithEarliestPts();
-      }
-      
-      if (selectedFrame == nullptr) {
-        // No frames available or buffer not full yet, keep trying
-        return AVERROR(EAGAIN);
-      }
-    } else {
-    }
-  } else {
-    // Fall back to earliest frame behavior (for approximate seek mode)
-    selectedFrame = findFrameWithEarliestPts();
-    if (selectedFrame == nullptr) {
-      if (eofSent_) {
-        return AVERROR_EOF;
-      } else {
-        return AVERROR(EAGAIN);
-      }
-    }
-  }
+  BufferedFrame* selectedFrame = findFrameWithExactPts(desiredPts);
+  if (selectedFrame == nullptr) {
+    // TODONVDEC: Need to handle case where frame buffer is full!!!!!
+    return AVERROR(EAGAIN);
+  } 
 
   CUVIDPARSERDISPINFO dispInfo = selectedFrame->dispInfo;
   int64_t pts = selectedFrame->pts;
@@ -719,23 +678,6 @@ CustomNvdecDeviceInterface::findEmptySlot() {
   // If no empty slots, expand buffer like DALI does
   frameBuffer_.emplace_back();
   return &frameBuffer_.back();
-}
-
-// Helper method to find frame with earliest PTS for display order
-CustomNvdecDeviceInterface::BufferedFrame* 
-CustomNvdecDeviceInterface::findFrameWithEarliestPts() {
-  BufferedFrame* earliest = nullptr;
-  
-  for (auto& frame : frameBuffer_) {
-    if (frame.available) {
-      if (earliest == nullptr || frame.pts < earliest->pts) {
-        earliest = &frame;
-      }
-      // For equal PTS values, keep the first one found (no action needed)
-    }
-  }
-  
-  return earliest;
 }
 
 // Helper method to find frame with exact PTS match

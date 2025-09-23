@@ -180,7 +180,6 @@ class CustomNvdecDeviceInterface : public DeviceInterface {
 
   // Helper methods for frame reordering
   BufferedFrame* findEmptySlot();
-  BufferedFrame* findFrameWithEarliestPts();
   BufferedFrame* findFrameWithExactPts(int64_t desiredPts);
   
   
