@@ -7,7 +7,6 @@
 #include <torch/types.h>
 #include <mutex>
 #include <vector>
-#include <unistd.h>  // For usleep
 
 #include "src/torchcodec/_core/CustomNvdecDeviceInterface.h"
 
@@ -194,11 +193,9 @@ CustomNvdecDeviceInterface::CustomNvdecDeviceInterface(
   
   // Initialize frame buffer for B-frame reordering
   // TODONVDEC tune default size. Is this even supposed to be MAX_DECODE_SURFACES?
-  // frameBuffer_.resize(MAX_DECODE_SURFACES);
-  frameBuffer_.resize(4);
+  frameBuffer_.resize(MAX_DECODE_SURFACES);
+  // frameBuffer_.resize(4);
   
-  // Initialize decode surface tracking (like DALI)
-  surfaceInUse_.resize(MAX_DECODE_SURFACES, false);
   
   // Initialize PTS tracking for multi-frame packets
   basePts_ = AV_NOPTS_VALUE;
@@ -392,20 +389,6 @@ int CustomNvdecDeviceInterface::handlePictureDecode(
   TORCH_CHECK(
       decoder_, "Decoder not initialized before picture decode");
 
-  // Like DALI: wait for decode surface to become available
-  int totalWait = 0;
-  constexpr int sleepPeriod = 500; // microseconds
-  constexpr int timeoutSec = 20;
-  constexpr bool enableTimeout = false;
-  
-  int surfaceIndex = pPicParams->CurrPicIdx;
-  
-  while (surfaceIndex < surfaceInUse_.size() && surfaceInUse_[surfaceIndex]) {
-    if (enableTimeout && totalWait++ > timeoutSec * 1000000 / sleepPeriod) {
-      return 0;
-    }
-    usleep(sleepPeriod);
-  }
 
 
   // Doc say that calling cuvidDecodePicture kicks of the hardware decoding of the frame (async!).
@@ -418,10 +401,6 @@ int CustomNvdecDeviceInterface::handlePictureDecode(
     return 0;
   }
   
-  // Mark surface as in-use (like DALI)
-  if (surfaceIndex < surfaceInUse_.size()) {
-    surfaceInUse_[surfaceIndex] = true;
-  }
   
   // Like DALI: manually create display info and handle picture display directly
   CUVIDPARSERDISPINFO dispInfo = {};
@@ -552,7 +531,7 @@ int CustomNvdecDeviceInterface::receiveFrame(UniqueAVFrame& frame, int64_t desir
         if (frame.available) availableFrames++;
       }
       
-      if (availableFrames >= 3) { // Buffer is getting full, free up space
+      if (availableFrames >= MAX_DECODE_SURFACES) { // Buffer is getting full, free up space
         selectedFrame = findFrameWithEarliestPts();
 #if CUSTOM_NVDEC_DEBUG
         if (selectedFrame) {
@@ -644,11 +623,6 @@ int CustomNvdecDeviceInterface::receiveFrame(UniqueAVFrame& frame, int64_t desir
   // Unmap the frame
   cuvidUnmapVideoFrame(static_cast<CUvideodecoder>(decoder_.get()), framePtr);
 
-  // Mark surface as free (like DALI does in convert_frame)
-  int surfaceIndex = dispInfo.picture_index;
-  if (surfaceIndex < surfaceInUse_.size()) {
-    surfaceInUse_[surfaceIndex] = false;
-  }
 
 #if CUSTOM_NVDEC_DEBUG
   printFrameBuffer("receiveFrame end");
@@ -698,10 +672,6 @@ void CustomNvdecDeviceInterface::flush() {
   // TODONVDEC make sure this is syncing the right stream, not necessarily stream 0
   cudaStreamSynchronize(0);
 
-  // Clear decode surface usage tracking
-  for (size_t i = 0; i < surfaceInUse_.size(); ++i) {
-    surfaceInUse_[i] = false;
-  }
   
   // Reset current PTS like DALI does
   currentPts_ = AV_NOPTS_VALUE;
