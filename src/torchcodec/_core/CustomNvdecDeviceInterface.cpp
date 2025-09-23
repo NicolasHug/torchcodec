@@ -748,8 +748,8 @@ UniqueAVFrame CustomNvdecDeviceInterface::convertCudaFrameToAVFrame(
       avFrame->colorspace = AVCOL_SPC_SMPTE170M; // BT.601
       break;
     default:
-      // Default to BT.709 for unknown coefficients
-      avFrame->colorspace = AVCOL_SPC_BT709;
+      // Default to BT.601 for unknown coefficients
+      avFrame->colorspace = AVCOL_SPC_SMPTE170M;
       break;
   }
   

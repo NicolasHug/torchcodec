@@ -37,6 +37,7 @@ from .utils import (
     NASA_AUDIO_MP3,
     NASA_AUDIO_MP3_44100,
     NASA_VIDEO,
+    TEST_SRC_2_720P,
     needs_cuda,
     psnr,
     SINE_MONO_S16,
@@ -1415,23 +1416,26 @@ class TestVideoDecoder:
         decoder.get_frames_played_at(torch.tensor([0, 1], dtype=torch.float))
     
     @needs_cuda
-    @pytest.mark.parametrize("asset", (NASA_VIDEO,))
-    @pytest.mark.parametrize("indices", ("all", "some"))
-    def test_custom_nvdec_interface(self, asset, indices):
+    @pytest.mark.parametrize("asset", (NASA_VIDEO, TEST_SRC_2_720P, BT709_FULL_RANGE))
+    @pytest.mark.parametrize("contiguous_indices", (True, False))
+    def test_custom_nvdec_interface(self, asset, contiguous_indices):
         ref_decoder = VideoDecoder(asset.path, device="cuda")
         beta_decoder = VideoDecoder(asset.path, device="cuda:0:custom_nvdec")
 
         assert ref_decoder.metadata == beta_decoder.metadata
 
-        if indices == "all":
+        if contiguous_indices:
             indices = range(len(ref_decoder))
         else:
             indices = range(0, len(ref_decoder), 10)
 
         for frame_index in indices:
-            ref_frame = ref_decoder.get_frame_at(frame_index).data
-            beta_frame = beta_decoder.get_frame_at(frame_index).data
-            torch.testing.assert_close(ref_frame, beta_frame, rtol=0, atol=0)
+            ref_frame = ref_decoder.get_frame_at(frame_index)
+            beta_frame = beta_decoder.get_frame_at(frame_index)
+            torch.testing.assert_close(beta_frame.data, ref_frame.data, rtol=0, atol=0)
+
+            assert beta_frame.pts_seconds == ref_frame.pts_seconds
+            assert beta_frame.duration_seconds == ref_frame.duration_seconds
 
 
 class TestAudioDecoder:
