@@ -1413,6 +1413,25 @@ class TestVideoDecoder:
 
         decoder.get_frames_played_at(torch.tensor([0, 1], dtype=torch.int))
         decoder.get_frames_played_at(torch.tensor([0, 1], dtype=torch.float))
+    
+    @needs_cuda
+    @pytest.mark.parametrize("asset", (NASA_VIDEO,))
+    @pytest.mark.parametrize("indices", ("all", "some"))
+    def test_custom_nvdec_interface(self, asset, indices):
+        ref_decoder = VideoDecoder(asset.path, device="cuda")
+        beta_decoder = VideoDecoder(asset.path, device="cuda:0:custom_nvdec")
+
+        assert ref_decoder.metadata == beta_decoder.metadata
+
+        if indices == "all":
+            indices = range(len(ref_decoder))
+        else:
+            indices = range(0, len(ref_decoder), 10)
+
+        for frame_index in indices:
+            ref_frame = ref_decoder.get_frame_at(frame_index).data
+            beta_frame = beta_decoder.get_frame_at(frame_index).data
+            torch.testing.assert_close(ref_frame, beta_frame, rtol=0, atol=0)
 
 
 class TestAudioDecoder:
