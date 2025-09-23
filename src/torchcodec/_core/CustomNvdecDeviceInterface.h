@@ -6,9 +6,6 @@
 
 #pragma once
 
-// Debug flag - set to 1 to enable debug output, 0 to disable
-#define CUSTOM_NVDEC_DEBUG 1
-
 #include "src/torchcodec/_core/DeviceInterface.h"
 #include "src/torchcodec/_core/Cache.h"
 #include "src/torchcodec/_core/FFMPEGCommon.h"
@@ -189,12 +186,6 @@ class CustomNvdecDeviceInterface : public DeviceInterface {
   // Helper method to calculate frame duration in timebase units
   int64_t calculateFrameDuration() const;
   
-#if CUSTOM_NVDEC_DEBUG
-  // Debug helper functions
-  void printPtsQueue(const std::string& context) const;
-  void printFrameBuffer(const std::string& context) const;
-#endif
-
 
   // Initialize video parser
   void createVideoParser();

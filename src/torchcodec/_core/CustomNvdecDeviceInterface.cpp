@@ -10,9 +10,6 @@
 
 #include "src/torchcodec/_core/CustomNvdecDeviceInterface.h"
 
-#if CUSTOM_NVDEC_DEBUG
-#include <iostream>  // For debug output
-#endif
 #include "src/torchcodec/_core/DeviceInterface.h"
 #include "src/torchcodec/_core/FFMPEGCommon.h"
 
@@ -95,15 +92,6 @@ UniqueCUvideodecoder NVDECCache::createDecoder(CUVIDEOFORMAT* video_format) {
   if (num_decode_surfaces == 0) {
     num_decode_surfaces = 20;
   }
-  #if CUSTOM_NVDEC_DEBUG
-  std::cout << "[DEBUG] Creating new NVDEC decoder: "
-            << "Codec=" << static_cast<int>(codec_type)
-            << ", Size=" << width << "x" << height
-            << ", Chroma=" << static_cast<int>(chroma_format)
-            << ", BitDepth=" << (bit_depth_luma_minus8 + 8)
-            << ", Surfaces=" << static_cast<int>(num_decode_surfaces)
-            << std::endl;
-  #endif
   
   // Check decoder capabilities
   auto caps = CUVIDDECODECAPS{};
@@ -363,21 +351,6 @@ int CustomNvdecDeviceInterface::handleVideoSequence(
 int CustomNvdecDeviceInterface::handlePictureDecode(
     CUVIDPICPARAMS* pPicParams) {
 
-#if CUSTOM_NVDEC_DEBUG
-  // NVDEC picture types (from cuviddec.h)
-  const char* picTypeStr = "unknown";
-  if (pPicParams->intra_pic_flag) {
-    picTypeStr = "I-frame";
-  } else if (pPicParams->ref_pic_flag) {
-    picTypeStr = "P-frame"; 
-  } else {
-    picTypeStr = "B-frame";
-  }
-
-  std::cout << "[DEBUG] handlePictureDecode: Called for surface " << pPicParams->CurrPicIdx
-            << ", type=" << picTypeStr << std::endl;
-#endif
-
   // Like DALI: if we're flushing, don't process new decode operations
   if (flush_) {
     return 0;
@@ -420,13 +393,6 @@ int CustomNvdecDeviceInterface::handlePictureDecode(
   }
   currentPts_ = framePts;
   
-#if CUSTOM_NVDEC_DEBUG
-  std::cout << "[DEBUG]   handlePictureDecode: picture_index=" << dispInfo.picture_index 
-            << ", assigned PTS=" << framePts
-            << ", frame_type=" << (pPicParams->intra_pic_flag ? "I" : (pPicParams->ref_pic_flag ? "P" : "B")) << std::endl;
-  printPtsQueue("after PTS assignment");
-#endif
-  
   // Set the PTS in the display info
   dispInfo.timestamp = framePts;
   
@@ -438,11 +404,6 @@ int CustomNvdecDeviceInterface::handlePictureDecode(
   
   
   slot->available = true;
-  
-#if CUSTOM_NVDEC_DEBUG
-  printFrameBuffer("after adding frame");
-#endif
-  
   return 1;
 }
 
@@ -456,26 +417,13 @@ int CustomNvdecDeviceInterface::sendPacket(ReferenceAVPacket& packet) {
     
     if (packet.get() && packet->data && packet->size > 0) {
       // Regular packet with data
-#if CUSTOM_NVDEC_DEBUG
-      std::string frameType = "unknown";
-      if (packet->flags & AV_PKT_FLAG_KEY) {
-        frameType = "keyframe";
-      } else {
-        frameType = "non-keyframe";
-      }
-      std::cout << "[DEBUG] sendPacket: Sending packet with PTS=" << packet->pts << ", size=" << packet->size << ", type=" << frameType << std::endl;
-#endif
-      
-      cudaPacket.payload = packet->data;
+    cudaPacket.payload = packet->data;
     cudaPacket.payload_size = packet->size;
     cudaPacket.flags = CUVID_PKT_TIMESTAMP;
     cudaPacket.timestamp = packet->pts;
     
     // Like DALI: store PTS in queue to assign to frames as they come out
     pipedPts_.push(packet->pts);
-#if CUSTOM_NVDEC_DEBUG
-    printPtsQueue("after sendPacket");
-#endif
     
   } else {
     // End of stream packet
@@ -485,29 +433,17 @@ int CustomNvdecDeviceInterface::sendPacket(ReferenceAVPacket& packet) {
 
   CUresult result = cuvidParseVideoData(videoParser_, &cudaPacket);
   if (result != CUDA_SUCCESS) {
-#if CUSTOM_NVDEC_DEBUG
-    std::cout << "[DEBUG] sendPacket: Failed, returning AVERROR_EXTERNAL" << std::endl;
-#endif
     return AVERROR_EXTERNAL;
   }
 
-#if CUSTOM_NVDEC_DEBUG
-  std::cout << "[DEBUG] sendPacket: Success, returning 0" << std::endl;
-#endif
   return 0;
 }
 
 int CustomNvdecDeviceInterface::receiveFrame(UniqueAVFrame& frame, int64_t desiredPts) {
 
-#if CUSTOM_NVDEC_DEBUG
-  std::cout << "[DEBUG] receiveFrame: Called" << std::endl;
-#endif
   
   std::lock_guard<std::mutex> lock(frameBufferMutex_);
   
-#if CUSTOM_NVDEC_DEBUG
-  printFrameBuffer("receiveFrame start");
-#endif
   
   // Choose frame selection strategy based on whether we have a desired PTS
   BufferedFrame* selectedFrame = nullptr;
@@ -525,34 +461,18 @@ int CustomNvdecDeviceInterface::receiveFrame(UniqueAVFrame& frame, int64_t desir
       
       if (availableFrames >= MAX_DECODE_SURFACES) { // Buffer is getting full, free up space
         selectedFrame = findFrameWithEarliestPts();
-#if CUSTOM_NVDEC_DEBUG
-        if (selectedFrame) {
-          std::cout << "[DEBUG] receiveFrame: Buffer full (" << availableFrames << " frames), consuming earliest frame PTS=" 
-                    << selectedFrame->pts << " to free decode surfaces" << std::endl;
-        }
-#endif
       }
       
       if (selectedFrame == nullptr) {
         // No frames available or buffer not full yet, keep trying
-#if CUSTOM_NVDEC_DEBUG
-        std::cout << "[DEBUG] receiveFrame: No exact PTS match found for " << desiredPts 
-                  << " (buffer has " << availableFrames << " frames), returning AVERROR(EAGAIN)" << std::endl;
-#endif
         return AVERROR(EAGAIN);
       }
     } else {
-#if CUSTOM_NVDEC_DEBUG
-      std::cout << "[DEBUG] receiveFrame: Found exact PTS match for " << desiredPts << std::endl;
-#endif
     }
   } else {
     // Fall back to earliest frame behavior (for approximate seek mode)
     selectedFrame = findFrameWithEarliestPts();
     if (selectedFrame == nullptr) {
-#if CUSTOM_NVDEC_DEBUG
-      std::cout << "[DEBUG] receiveFrame: No frames available, returning " << (eofSent_ ? "AVERROR_EOF" : "AVERROR(EAGAIN)") << std::endl;
-#endif
       if (eofSent_) {
         return AVERROR_EOF;
       } else {
@@ -563,10 +483,6 @@ int CustomNvdecDeviceInterface::receiveFrame(UniqueAVFrame& frame, int64_t desir
 
   CUVIDPARSERDISPINFO dispInfo = selectedFrame->dispInfo;
   int64_t pts = selectedFrame->pts;
-  
-#if CUSTOM_NVDEC_DEBUG
-  std::cout << "[DEBUG] receiveFrame: Returning frame with PTS=" << pts << ", picture_index=" << dispInfo.picture_index << std::endl;
-#endif
   
   // Mark slot as used
   selectedFrame->available = false;
@@ -589,9 +505,6 @@ int CustomNvdecDeviceInterface::receiveFrame(UniqueAVFrame& frame, int64_t desir
       &procParams);
 
   if (result != CUDA_SUCCESS) {
-#if CUSTOM_NVDEC_DEBUG
-    std::cout << "[DEBUG] receiveFrame: cuvidMapVideoFrame failed, returning AVERROR_EXTERNAL" << std::endl;
-#endif
     return AVERROR_EXTERNAL;
   }
 
@@ -599,27 +512,9 @@ int CustomNvdecDeviceInterface::receiveFrame(UniqueAVFrame& frame, int64_t desir
   // Convert the NVDEC frame to AVFrame, passing the correct PTS
   frame = convertCudaFrameToAVFrame(framePtr, pitch, dispInfo, timeBase_);
 
-#if CUSTOM_NVDEC_DEBUG
-  // Print frame type information from the AVFrame
-  const char* frameTypeStr = "unknown";
-  if (frame->key_frame) {
-    frameTypeStr = "keyframe";
-  } else {
-    frameTypeStr = "non-keyframe";
-  }
-  std::cout << "[DEBUG] receiveFrame: AVFrame created - PTS=" << pts 
-            << ", picture_index=" << dispInfo.picture_index 
-            << ", key_frame=" << frameTypeStr << std::endl;
-#endif
-
   // Unmap the frame
   cuvidUnmapVideoFrame(static_cast<CUvideodecoder>(decoder_.get()), framePtr);
 
-
-#if CUSTOM_NVDEC_DEBUG
-  printFrameBuffer("receiveFrame end");
-  std::cout << "[DEBUG] receiveFrame: Successfully returning frame" << std::endl;
-#endif
 
   return 0;
 }
@@ -881,53 +776,5 @@ int64_t CustomNvdecDeviceInterface::calculateFrameDuration() const {
   // If we can't calculate duration, return 0
   return 0;
 }
-
-#if CUSTOM_NVDEC_DEBUG
-// Debug helper functions
-void CustomNvdecDeviceInterface::printPtsQueue(const std::string& context) const {
-  // Add indentation based on context
-  std::string indent = "";
-  if (context.find("sendPacket") != std::string::npos || context.find("receiveFrame") != std::string::npos) {
-    indent = "";  // Level 0: sendPacket and receiveFrame
-  } else if (context.find("PTS assignment") != std::string::npos) {
-    indent = "  ";  // Level 1: operations within handlePictureDecode
-  }
-  
-  std::cout << "[DEBUG] " << indent << "PTS Queue (" << context << "): [";
-  // Regular queue doesn't support iteration, so we make a copy to print contents
-  auto tempQueue = pipedPts_;
-  bool first = true;
-  while (!tempQueue.empty()) {
-    if (!first) std::cout << ", ";
-    std::cout << tempQueue.front();
-    tempQueue.pop();
-    first = false;
-  }
-  std::cout << "] (size: " << pipedPts_.size() << ", front: " << (pipedPts_.empty() ? "N/A" : std::to_string(pipedPts_.front())) << ")" << std::endl;
-}
-
-void CustomNvdecDeviceInterface::printFrameBuffer(const std::string& context) const {
-  // Add indentation based on context
-  std::string indent = "";
-  if (context.find("receiveFrame") != std::string::npos) {
-    indent = "";  // Level 0: receiveFrame operations
-  } else if (context.find("adding frame") != std::string::npos) {
-    indent = "  ";  // Level 1: operations within handlePictureDecode
-  }
-  
-  std::cout << "[DEBUG] " << indent << "Frame Buffer (" << context << "): [";
-  bool first = true;
-  for (size_t i = 0; i < frameBuffer_.size(); ++i) {
-    if (!first) std::cout << ", ";
-    if (frameBuffer_[i].available) {
-      std::cout << "{slot:" << i << ", pts:" << frameBuffer_[i].pts << ", avail:true}";
-    } else {
-      std::cout << "{slot:" << i << ", pts:N/A, offset:N/A, avail:false}";
-    }
-    first = false;
-  }
-  std::cout << "] (total slots: " << frameBuffer_.size() << ")" << std::endl;
-}
-#endif // CUSTOM_NVDEC_DEBUG
 
 } // namespace facebook::torchcodec

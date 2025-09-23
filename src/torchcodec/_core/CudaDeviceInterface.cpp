@@ -205,8 +205,6 @@ void CudaDeviceInterface::convertAVFrameToFrameOutput(
     UniqueAVFrame& avFrame,
     FrameOutput& frameOutput,
     std::optional<torch::Tensor> preAllocatedOutputTensor) {
-  // printf("In default's CUDA interface convertAVFrameToFrameOutput\n");
-  fflush(stdout);
   if (avFrame->format != AV_PIX_FMT_CUDA) {
     // The frame's format is AV_PIX_FMT_CUDA if and only if its content is on
     // the GPU. In this branch, the frame is on the CPU: this is what NVDEC
@@ -324,7 +322,6 @@ void CudaDeviceInterface::convertAVFrameToFrameOutput(
   // For background, see
   // Note [YUV -> RGB Color Conversion, color space and color range]
   if (avFrame->colorspace == AVColorSpace::AVCOL_SPC_BT709) {
-    printf("BT.709 color space\n");
     if (avFrame->color_range == AVColorRange::AVCOL_RANGE_JPEG) {
       // NPP provides a pre-defined color conversion function for BT.709 full
       // range: nppiNV12ToRGB_709HDTV_8u_P2C3R_Ctx. But it's not closely
@@ -361,7 +358,6 @@ void CudaDeviceInterface::convertAVFrameToFrameOutput(
           *nppCtx_);
     }
   } else {
-    printf("BT.601 color space\n");
 
     // TODO we're assuming BT.601 color space (and probably limited range) by
     // calling nppiNV12ToRGB_8u_P2C3R_Ctx. We should handle BT.601 full range,
