@@ -1457,6 +1457,17 @@ class TestVideoDecoder:
         torch.testing.assert_close(beta_frames.data, ref_frames.data, rtol=0, atol=0)
         torch.testing.assert_close(beta_frames.pts_seconds, ref_frames.pts_seconds)
         torch.testing.assert_close(beta_frames.duration_seconds, ref_frames.duration_seconds)
+    
+    @needs_cuda
+    def test_beta_cuda_interface_error(self):
+        with pytest.raises(RuntimeError, match="Unsupported codec for BETA CUDA interface: av1"):
+            VideoDecoder(AV1_VIDEO.path, device="cuda:0:beta")
+        with pytest.raises(RuntimeError, match="Unsupported codec for BETA CUDA interface: hevc"):
+            VideoDecoder(H265_VIDEO.path, device="cuda:0:beta")
+        
+        with pytest.raises(RuntimeError, match="Seek mode must be exact for BETA CUDA interface."):
+            VideoDecoder(NASA_VIDEO.path, device="cuda:0:beta", seek_mode="approximate")
+
 
 
 

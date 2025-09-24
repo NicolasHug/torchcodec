@@ -459,6 +459,8 @@ void SingleStreamDecoder::addStream(
       // TODONVDEC P3 this is ugly, should be more generic and part of some init
       // logic.
       if (deviceVariant_ == "beta") {
+        // TODONVDEC P0: support approximate seek mode
+        TORCH_CHECK(seekMode_ == SeekMode::exact, "Seek mode must be exact for BETA CUDA interface.");
         auto betaCudaInterface =
             static_cast<BetaCudaDeviceInterface*>(deviceInterface_.get());
         betaCudaInterface->setTimeBase(streamInfo.timeBase);
