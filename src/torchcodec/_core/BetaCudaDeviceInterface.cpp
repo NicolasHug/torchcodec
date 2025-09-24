@@ -337,7 +337,7 @@ int BetaCudaDeviceInterface::sendPacket(ReferenceAVPacket& packet) {
     return AVERROR_EXTERNAL;
   }
 
-  return 0;
+  return AVSUCCESS;
 }
 
 int BetaCudaDeviceInterface::receiveFrame(UniqueAVFrame& frame, int64_t desiredPts) {
@@ -383,7 +383,7 @@ int BetaCudaDeviceInterface::receiveFrame(UniqueAVFrame& frame, int64_t desiredP
   cuvidUnmapVideoFrame(static_cast<CUvideodecoder>(decoder_.get()), framePtr);
 
 
-  return 0;
+  return AVSUCCESS;
 }
 
 void BetaCudaDeviceInterface::flush() {

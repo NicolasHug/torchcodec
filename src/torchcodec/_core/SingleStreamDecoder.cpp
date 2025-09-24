@@ -452,10 +452,12 @@ void SingleStreamDecoder::addStream(
       // ACodecContext initialization anymore, it's more generally about
       // initializing the device interface
       deviceInterface_->initializeContext(codecContext);
-      
-      // For BETA interface, pass the timeBase and frameRate for duration calculations
+
+      // For BETA interface, pass the timeBase and frameRate for duration
+      // calculations
       if (deviceVariant_ == "beta") {
-        auto betaCudaInterface = static_cast<BetaCudaDeviceInterface*>(deviceInterface_.get());
+        auto betaCudaInterface =
+            static_cast<BetaCudaDeviceInterface*>(deviceInterface_.get());
         betaCudaInterface->setTimeBase(streamInfo.timeBase);
         betaCudaInterface->setFrameRate(streamInfo.stream->r_frame_rate);
       }
@@ -1159,11 +1161,10 @@ void SingleStreamDecoder::maybeSeekToBeforeDesiredPts() {
       std::to_string(desiredPts),
       ": ",
       getFFMPEGErrorStringFromErrorCode(status));
-      
 
   decodeStats_.numFlushes++;
   avcodec_flush_buffers(streamInfo.codecContext.get());
-  
+
   if (deviceInterface_) {
     deviceInterface_->flush();
   }
@@ -1190,88 +1191,90 @@ UniqueAVFrame SingleStreamDecoder::decodeAVFrame(
   int status = AVSUCCESS;
   bool reachedEOF = false;
 
-  // TODONVDEC we now have 2 separate main decoding loops: the new one when the
-  // device interface can decode packets directly, and the traditional ffmpeg
-  // path, as in `main`. This makes things more obvious and explicit for now,
-  // but we should consider consolidating and merging both, with the right
-  // abstractions/extension points.
-  if (deviceInterface_ && deviceInterface_->canDecodePacketDirectly()) {
-    while (true) {
+  bool useCustomInterface =
+      deviceInterface_ && deviceInterface_->canDecodePacketDirectly();
+
+  while (true) {
+    if (useCustomInterface) {
       status = deviceInterface_->receiveFrame(avFrame, cursor_);
+    } else {
+      status =
+          avcodec_receive_frame(streamInfo.codecContext.get(), avFrame.get());
+    }
 
-      if (status != 0 && status != AVERROR(EAGAIN)) {
-        // Non-retriable error or EOF
-        if (status == AVERROR_EOF) {
-          throw SingleStreamDecoder::EndOfFileException(
-              "Requested next frame while there are no more frames left to "
-              "decode.");
-        }
-        TORCH_CHECK(
-            false,
-            "Could not receive frame from custom decoder: ",
-            getFFMPEGErrorStringFromErrorCode(status));
-      }
+    if (status != AVSUCCESS && status != AVERROR(EAGAIN)) {
+      // Non-retriable error
+      break;
+    }
 
-      decodeStats_.numFramesReceivedByDecoder++;
-      // Is this the kind of frame we're looking for?
-      if (status == 0 && filterFunction(avFrame)) {
-        // Yes, this is the frame we'll return; break out of the decoding loop.
-        break;
-      } else if (status == 0) {
-        // No, but we received a valid frame - just not the kind we're looking
-        // for. Skip reading more packets and try to receive more frames.
-        continue;
-      }
+    decodeStats_.numFramesReceivedByDecoder++;
+    // Is this the kind of frame we're looking for?
+    if (status == AVSUCCESS && filterFunction(avFrame)) {
+      // Yes, this is the frame we'll return; break out of the decoding loop.
+      break;
+    } else if (status == AVSUCCESS) {
+      // No, but we received a valid frame - just not the kind we're looking
+      // for. The logic below will read packets and send them to the decoder.
+      // But since we did just receive a frame, we should skip reading more
+      // packets and sending them to the decoder and just try to receive more
+      // frames from the decoder.
+      continue;
+    }
 
-      if (reachedEOF) {
-        // We don't have any more packets to receive. So keep on pulling frames
-        // from decoder's internal buffers.
-        continue;
-      }
+    if (reachedEOF) {
+      // We don't have any more packets to receive. So keep on pulling frames
+      // from decoder's internal buffers.
+      continue;
+    }
 
-      // We still haven't found the frame we're looking for. So let's read more
-      // packets and send them to the decoder.
-      ReferenceAVPacket packet(autoAVPacket);
-      do {
-        status = av_read_frame(formatContext_.get(), packet.get());
-        decodeStats_.numPacketsRead++;
+    // We still haven't found the frame we're looking for. So let's read more
+    // packets and send them to the decoder.
+    ReferenceAVPacket packet(autoAVPacket);
+    do {
+      status = av_read_frame(formatContext_.get(), packet.get());
+      decodeStats_.numPacketsRead++;
 
-        if (status == AVERROR_EOF) {
-          // End of file reached. We must drain the decoder by sending an empty
-          // packet (similar to standard FFmpeg path)
+      if (status == AVERROR_EOF) {
+        // End of file reached. We must drain the decoder
+        if (useCustomInterface) {
           AutoAVPacket eofAutoPacket;
           ReferenceAVPacket eofPacket(eofAutoPacket);
-          // Clear packet data to signal EOF
           eofPacket->data = nullptr;
           eofPacket->size = 0;
           status = deviceInterface_->sendPacket(eofPacket);
-          TORCH_CHECK(
-              status >= 0,
-              "Could not flush custom decoder: ",
-              getFFMPEGErrorStringFromErrorCode(status));
-
-          reachedEOF = true;
-          break;
+        } else {
+          status = avcodec_send_packet(
+              streamInfo.codecContext.get(),
+              /*avpkt=*/nullptr);
         }
-
         TORCH_CHECK(
             status >= AVSUCCESS,
-            "Could not read frame from input file: ",
+            "Could not flush decoder: ",
             getFFMPEGErrorStringFromErrorCode(status));
 
-      } while (packet->stream_index != activeStreamIndex_);
-
-      if (reachedEOF) {
-        // We don't have any more packets to send to the decoder. So keep on
-        // pulling frames from its internal buffers.
-        continue;
+        reachedEOF = true;
+        break;
       }
 
+      TORCH_CHECK(
+          status >= AVSUCCESS,
+          "Could not read frame from input file: ",
+          getFFMPEGErrorStringFromErrorCode(status));
+
+    } while (packet->stream_index != activeStreamIndex_);
+
+    if (reachedEOF) {
+      // We don't have any more packets to send to the decoder. So keep on
+      // pulling frames from its internal buffers.
+      continue;
+    }
+
+    // We got a valid packet. Send it to the decoder, and we'll receive it in
+    // the next iteration.
+    if (useCustomInterface) {
       ReferenceAVPacket* packetToSend = &packet;
       AutoAVPacket filteredAutoPacket;
       ReferenceAVPacket filteredPacket(filteredAutoPacket);
-
-      // Apply bitstream filtering if needed
       if (streamInfo.bitstreamFilter != nullptr) {
         int retVal =
             av_bsf_send_packet(streamInfo.bitstreamFilter.get(), packet.get());
@@ -1289,103 +1292,28 @@ UniqueAVFrame SingleStreamDecoder::decodeAVFrame(
 
         packetToSend = &filteredPacket;
       }
-
-      // Use custom send/receive API (similar to avcodec_send_packet)
       status = deviceInterface_->sendPacket(*packetToSend);
-      TORCH_CHECK(
-          status >= 0,
-          "Could not push packet to custom decoder: ",
-          getFFMPEGErrorStringFromErrorCode(status));
-
-      decodeStats_.numPacketsSentToDecoder++;
-    }
-  } else {
-    // Standard FFmpeg decoding path
-    while (true) {
-      status =
-          avcodec_receive_frame(streamInfo.codecContext.get(), avFrame.get());
-
-      if (status != AVSUCCESS && status != AVERROR(EAGAIN)) {
-        // Non-retriable error
-        break;
-      }
-
-      decodeStats_.numFramesReceivedByDecoder++;
-      // Is this the kind of frame we're looking for?
-      if (status == AVSUCCESS && filterFunction(avFrame)) {
-        // Yes, this is the frame we'll return; break out of the decoding loop.
-        break;
-      } else if (status == AVSUCCESS) {
-        // No, but we received a valid frame - just not the kind we're looking
-        // for. The logic below will read packets and send them to the decoder.
-        // But since we did just receive a frame, we should skip reading more
-        // packets and sending them to the decoder and just try to receive more
-        // frames from the decoder.
-        continue;
-      }
-
-      if (reachedEOF) {
-        // We don't have any more packets to receive. So keep on pulling frames
-        // from its internal buffers.
-        continue;
-      }
-
-      // We still haven't found the frame we're looking for. So let's read more
-      // packets and send them to the decoder.
-      ReferenceAVPacket packet(autoAVPacket);
-      do {
-        status = av_read_frame(formatContext_.get(), packet.get());
-        decodeStats_.numPacketsRead++;
-
-        if (status == AVERROR_EOF) {
-          // End of file reached. We must drain the codec by sending a nullptr
-          // packet.
-          status = avcodec_send_packet(
-              streamInfo.codecContext.get(),
-              /*avpkt=*/nullptr);
-          TORCH_CHECK(
-              status >= AVSUCCESS,
-              "Could not flush decoder: ",
-              getFFMPEGErrorStringFromErrorCode(status));
-
-          reachedEOF = true;
-          break;
-        }
-
-        TORCH_CHECK(
-            status >= AVSUCCESS,
-            "Could not read frame from input file: ",
-            getFFMPEGErrorStringFromErrorCode(status));
-
-      } while (packet->stream_index != activeStreamIndex_);
-
-      if (reachedEOF) {
-        // We don't have any more packets to send to the decoder. So keep on
-        // pulling frames from its internal buffers.
-        continue;
-      }
-
-      // Use standard FFmpeg decoding path
+    } else {
       status = avcodec_send_packet(streamInfo.codecContext.get(), packet.get());
-      TORCH_CHECK(
-          status >= AVSUCCESS,
-          "Could not push packet to decoder: ",
-          getFFMPEGErrorStringFromErrorCode(status));
-
-      decodeStats_.numPacketsSentToDecoder++;
     }
+    TORCH_CHECK(
+        status >= AVSUCCESS,
+        "Could not push packet to decoder: ",
+        getFFMPEGErrorStringFromErrorCode(status));
 
-    if (status < AVSUCCESS) {
-      if (reachedEOF || status == AVERROR_EOF) {
-        throw SingleStreamDecoder::EndOfFileException(
-            "Requested next frame while there are no more frames left to "
-            "decode.");
-      }
-      TORCH_CHECK(
-          false,
-          "Could not receive frame from decoder: ",
-          getFFMPEGErrorStringFromErrorCode(status));
+    decodeStats_.numPacketsSentToDecoder++;
+  }
+
+  if (status < AVSUCCESS) {
+    if (reachedEOF || status == AVERROR_EOF) {
+      throw SingleStreamDecoder::EndOfFileException(
+          "Requested next frame while there are no more frames left to "
+          "decode.");
     }
+    TORCH_CHECK(
+        false,
+        "Could not receive frame from decoder: ",
+        getFFMPEGErrorStringFromErrorCode(status));
   }
 
   // Note that we don't flush the decoder when we reach EOF (even though that's

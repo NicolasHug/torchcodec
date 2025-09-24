@@ -55,11 +55,11 @@ class BetaCudaDeviceInterface : public DeviceInterface {
     return true;
   }
 
-  // Returns 0 on success, AVERROR(EAGAIN) if decoder queue full, or other AVERROR on failure
+  // Returns AVSUCCESS on success, AVERROR(EAGAIN) if decoder queue full, or other AVERROR on failure
   int sendPacket(ReferenceAVPacket& packet);
 
   // Receive decoded frame (non-blocking) 
-  // Returns 0 on success, AVERROR(EAGAIN) if no frame ready, AVERROR_EOF if end of stream,
+  // Returns AVSUCCESS on success, AVERROR(EAGAIN) if no frame ready, AVERROR_EOF if end of stream,
   // or other AVERROR on failure
   int receiveFrame(UniqueAVFrame& frame, int64_t desiredPts);
 
