@@ -229,35 +229,30 @@ void CudaDeviceInterface::convertAVFrameToFrameOutput(
     return;
   }
 
-  // TODONVDEC: We're currently calling this function from within the CNI
-  // (Custome NVDEC Interface). But the AVFrame's hw_frames_ctx doesn't exist,
-  // so we error. Not sure how to solve this: either set the field in a
-  // meaningful way, or allow to bypass the check, but then how do we know the
-  // pix format?
-
-  // // Above we checked that the AVFrame was on GPU, but that's not enough, we
-  // // also need to check that the AVFrame is in AV_PIX_FMT_NV12 format (8 bits),
-  // // because this is what the NPP color conversion routines expect.
-  // // TODO: we should investigate how to can perform color conversion for
-  // // non-8bit videos. This is supported on CPU.
-  // TORCH_CHECK(
-  //     avFrame->hw_frames_ctx != nullptr,
-  //     "The AVFrame does not have a hw_frames_ctx. "
-  //     "That's unexpected, please report this to the TorchCodec repo.");
-
-  // auto hwFramesCtx =
-  //     reinterpret_cast<AVHWFramesContext*>(avFrame->hw_frames_ctx->data);
-  // AVPixelFormat actualFormat = hwFramesCtx->sw_format;
-  // TORCH_CHECK(
-  //     actualFormat == AV_PIX_FMT_NV12,
-  //     "The AVFrame is ",
-  //     (av_get_pix_fmt_name(actualFormat) ? av_get_pix_fmt_name(actualFormat)
-  //                                        : "unknown"),
-  //     ", but we expected AV_PIX_FMT_NV12. This typically happens when "
-  //     "the video isn't 8bit, which is not supported on CUDA at the moment. "
-  //     "Try using the CPU device instead. "
-  //     "If the video is 10bit, we are tracking 10bit support in "
-  //     "https://github.com/pytorch/torchcodec/issues/776");
+  // Above we checked that the AVFrame was on GPU, but that's not enough, we
+  // also need to check that the AVFrame is in AV_PIX_FMT_NV12 format (8 bits),
+  // because this is what the NPP color conversion routines expect.
+  // TODO: we should investigate how to can perform color conversion for
+  // non-8bit videos. This is supported on CPU.
+  // TODONVDEC P2 this can be hit from the beta interface, but there's no
+  // hw_frames_ctx in this case. We should try to understand how that affects
+  // this validation.
+  AVHWFramesContext* hwFramesCtx = nullptr;
+  if (avFrame->hw_frames_ctx != nullptr) {
+    hwFramesCtx =
+        reinterpret_cast<AVHWFramesContext*>(avFrame->hw_frames_ctx->data);
+    AVPixelFormat actualFormat = hwFramesCtx->sw_format;
+    TORCH_CHECK(
+        actualFormat == AV_PIX_FMT_NV12,
+        "The AVFrame is ",
+        (av_get_pix_fmt_name(actualFormat) ? av_get_pix_fmt_name(actualFormat)
+                                           : "unknown"),
+        ", but we expected AV_PIX_FMT_NV12. This typically happens when "
+        "the video isn't 8bit, which is not supported on CUDA at the moment. "
+        "Try using the CPU device instead. "
+        "If the video is 10bit, we are tracking 10bit support in "
+        "https://github.com/pytorch/torchcodec/issues/776");
+  }
 
   auto frameDims =
       getHeightAndWidthFromOptionsOrAVFrame(videoStreamOptions, avFrame);
@@ -291,19 +286,23 @@ void CudaDeviceInterface::convertAVFrameToFrameOutput(
   // arbitrary, but unfortunately we know it's hardcoded to be the default
   // stream by FFmpeg:
   // https://github.com/FFmpeg/FFmpeg/blob/66e40840d15b514f275ce3ce2a4bf72ec68c7311/libavutil/hwcontext_cuda.c#L387-L388
-  // TORCH_CHECK(
-  //     hwFramesCtx->device_ctx != nullptr,
-  //     "The AVFrame's hw_frames_ctx does not have a device_ctx. ");
-  // auto cudaDeviceCtx =
-  //     static_cast<AVCUDADeviceContext*>(hwFramesCtx->device_ctx->hwctx);
-  // at::cuda::CUDAEvent nvdecDoneEvent;
-  // at::cuda::CUDAStream nvdecStream = // That's always the default stream. Sad.
-  //     c10::cuda::getStreamFromExternal(cudaDeviceCtx->stream, deviceIndex);
-  // nvdecDoneEvent.record(nvdecStream);
-
-  // // Don't start NPP work before NVDEC is done decoding the frame!
   at::cuda::CUDAStream nppStream = at::cuda::getCurrentCUDAStream(deviceIndex);
-  // nvdecDoneEvent.block(nppStream);
+  if (hwFramesCtx) {
+    // TODONVDEC P2 this block won't be hit from the beta interface because
+    // there is no hwFramesCtx, but we should still make sure there's no CUDA
+    // stream sync issue.
+    TORCH_CHECK(
+        hwFramesCtx->device_ctx != nullptr,
+        "The AVFrame's hw_frames_ctx does not have a device_ctx. ");
+    auto cudaDeviceCtx =
+        static_cast<AVCUDADeviceContext*>(hwFramesCtx->device_ctx->hwctx);
+    at::cuda::CUDAEvent nvdecDoneEvent;
+    at::cuda::CUDAStream nvdecStream = // That's always the default stream. Sad.
+        c10::cuda::getStreamFromExternal(cudaDeviceCtx->stream, deviceIndex);
+    nvdecDoneEvent.record(nvdecStream);
+    // Don't start NPP work before NVDEC is done decoding the frame!
+    nvdecDoneEvent.block(nppStream);
+  }
 
   // Create the NPP context if we haven't yet.
   nppCtx_->hStream = nppStream.stream();
@@ -358,7 +357,6 @@ void CudaDeviceInterface::convertAVFrameToFrameOutput(
           *nppCtx_);
     }
   } else {
-
     // TODO we're assuming BT.601 color space (and probably limited range) by
     // calling nppiNV12ToRGB_8u_P2C3R_Ctx. We should handle BT.601 full range,
     // and other color-spaces like 2020.
