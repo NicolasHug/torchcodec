@@ -1466,6 +1466,8 @@ class TestVideoDecoder:
             VideoDecoder(H265_VIDEO.path, device="cuda:0:beta")
         with pytest.raises(RuntimeError, match="Seek mode must be exact for BETA CUDA interface."):
             VideoDecoder(NASA_VIDEO.path, device="cuda:0:beta", seek_mode="approximate")
+        with pytest.raises(RuntimeError, match="Unsupported device"):
+            VideoDecoder(NASA_VIDEO.path, device="cuda:0:bad_variant")
 
 
 class TestAudioDecoder:

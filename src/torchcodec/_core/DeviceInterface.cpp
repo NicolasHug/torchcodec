@@ -85,8 +85,6 @@ void validateDeviceInterface(
       ")");
 }
 
-// Creation function with variant support (default = "default" for backward
-// compatibility)
 std::unique_ptr<DeviceInterface> createDeviceInterface(
     const torch::Device& device,
     const std::string_view variant) {
@@ -97,15 +95,6 @@ std::unique_ptr<DeviceInterface> createDeviceInterface(
   auto it = deviceMap.find(key);
   if (it != deviceMap.end()) {
     return std::unique_ptr<DeviceInterface>(it->second(device));
-  }
-
-  // Fallback to default variant if specific variant not found
-  if (variant != "default") {
-    key.variant = "default";
-    it = deviceMap.find(key);
-    if (it != deviceMap.end()) {
-      return std::unique_ptr<DeviceInterface>(it->second(device));
-    }
   }
 
   TORCH_CHECK(

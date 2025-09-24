@@ -125,8 +125,6 @@ void validateDeviceInterface(
     const std::string device,
     const std::string variant);
 
-// Creation function with variant support (default = "default" for backward
-// compatibility)
 std::unique_ptr<DeviceInterface> createDeviceInterface(
     const torch::Device& device,
     const std::string_view variant = "default");
