@@ -20,7 +20,7 @@ namespace facebook::torchcodec {
 // Key for device interface registration with device type + variant support
 struct DeviceInterfaceKey {
   torch::DeviceType deviceType;
-  std::string variant = "default"; // e.g., "default", "beta", etc.
+  std::string_view variant = "default"; // e.g., "default", "beta", etc.
 
   bool operator<(const DeviceInterfaceKey& other) const {
     if (deviceType != other.deviceType) {
@@ -29,10 +29,9 @@ struct DeviceInterfaceKey {
     return variant < other.variant;
   }
 
-  // Convenience constructors
-  DeviceInterfaceKey(torch::DeviceType type) : deviceType(type) {}
+  explicit DeviceInterfaceKey(torch::DeviceType type) : deviceType(type) {}
 
-  DeviceInterfaceKey(torch::DeviceType type, const std::string& var)
+  DeviceInterfaceKey(torch::DeviceType type, const std::string_view& var)
       : deviceType(type), variant(var) {}
 };
 
@@ -59,37 +58,30 @@ class DeviceInterface {
       FrameOutput& frameOutput,
       std::optional<torch::Tensor> preAllocatedOutputTensor = std::nullopt) = 0;
 
+  // ------------------------------------------
   // Extension points for custom decoding paths
+  // ------------------------------------------
+
   // Override to return true if this device interface can decode packets
   // directly
   virtual bool canDecodePacketDirectly() const {
     return false;
   }
 
-  // Override to decode AVPacket directly (bypassing FFmpeg codec)
-  // Only called if canDecodePacketDirectly() returns true
-  virtual UniqueAVFrame decodePacketDirectly(ReferenceAVPacket& /* packet */) {
-    TORCH_CHECK(
-        false,
-        "Direct packet decoding not implemented for this device interface");
-    return UniqueAVFrame(nullptr);
-  }
-
-  // New send/receive API for custom decoders (FFmpeg-style)
-  // Send packet for decoding (non-blocking)
-  // Returns 0 on success, AVERROR(EAGAIN) if decoder queue full, or other AVERROR on failure
-  virtual int sendPacket(ReferenceAVPacket& /* packet */) {
+  // Moral equivalent to avcodec_send_packet()
+  // Returns AVSUCCESS on success, AVERROR(EAGAIN) if decoder queue full, or
+  // other AVERROR on failure
+  virtual int sendPacket(ReferenceAVPacket& avPacket) {
     TORCH_CHECK(
         false,
         "Send/receive packet decoding not implemented for this device interface");
     return AVERROR(ENOSYS);
   }
 
-  // Receive decoded frame (non-blocking) 
-  // Returns 0 on success, AVERROR(EAGAIN) if no frame ready, AVERROR_EOF if end of stream,
-  // or other AVERROR on failure
-  // If desiredPts is specified (not AV_NOPTS_VALUE), looks for exact PTS match
-  virtual int receiveFrame(UniqueAVFrame& /* frame */, int64_t /* desiredPts */ = AV_NOPTS_VALUE) {
+  // Moral equivalent to avcodec_receive_frame()
+  // Returns AVSUCCESS on success, AVERROR(EAGAIN) if no frame ready,
+  // AVERROR_EOF if end of stream, or other AVERROR on failure
+  virtual int receiveFrame(UniqueAVFrame& avFrame, int64_t desiredPts) {
     TORCH_CHECK(
         false,
         "Send/receive packet decoding not implemented for this device interface");
@@ -108,8 +100,7 @@ class DeviceInterface {
       ReferenceAVPacket& packet,
       AutoAVPacket& filteredAutoPacket,
       ReferenceAVPacket& filteredPacket) {
-    // Default implementation: no BSF, return original packet
-    return &packet;
+    return &packet; // No filtering by default
   }
 
  protected:
@@ -119,22 +110,25 @@ class DeviceInterface {
 using CreateDeviceInterfaceFn =
     std::function<DeviceInterface*(const torch::Device& device)>;
 
-// New registration function with variant support
 bool registerDeviceInterface(
     const DeviceInterfaceKey& key,
     const CreateDeviceInterfaceFn createInterface);
 
-// Backward-compatible registration function
+// Backward-compatible registration function when variant is "default"
+// TODONVDEC P2 We only need this if someone in the wild has already started
+// registering their own interfaces. Ask Dmitry.
 bool registerDeviceInterface(
     torch::DeviceType deviceType,
     const CreateDeviceInterfaceFn createInterface);
 
-torch::Device createTorchDevice(const std::string device);
+void validateDeviceInterface(
+    const std::string device,
+    const std::string variant);
 
 // Creation function with variant support (default = "default" for backward
 // compatibility)
 std::unique_ptr<DeviceInterface> createDeviceInterface(
     const torch::Device& device,
-    const std::string& variant = "default");
+    const std::string_view variant = "default");
 
 } // namespace facebook::torchcodec

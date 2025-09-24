@@ -385,8 +385,8 @@ void SingleStreamDecoder::addStream(
     int streamIndex,
     AVMediaType mediaType,
     const torch::Device& device,
-    std::optional<int> ffmpegThreadCount,
-    const std::string& deviceVariant) {
+    const std::string_view deviceVariant,
+    std::optional<int> ffmpegThreadCount){
   TORCH_CHECK(
       activeStreamIndex_ == NO_ACTIVE_STREAM,
       "Can only add one single stream.");
@@ -414,7 +414,6 @@ void SingleStreamDecoder::addStream(
   streamInfo.stream = formatContext_->streams[activeStreamIndex_];
   streamInfo.avMediaType = mediaType;
 
-  deviceVariant_ = deviceVariant;
   deviceInterface_ = createDeviceInterface(device, deviceVariant);
 
   // This should never happen, checking just to be safe.
@@ -458,7 +457,7 @@ void SingleStreamDecoder::addStream(
       // calculations
       // TODONVDEC P3 this is ugly, should be more generic and part of some init
       // logic.
-      if (deviceVariant_ == "beta") {
+      if (deviceVariant == "beta") {
         // TODONVDEC P0: support approximate seek mode
         TORCH_CHECK(seekMode_ == SeekMode::exact, "Seek mode must be exact for BETA CUDA interface.");
         auto betaCudaInterface =
@@ -492,14 +491,14 @@ void SingleStreamDecoder::addStream(
 void SingleStreamDecoder::addVideoStream(
     int streamIndex,
     const VideoStreamOptions& videoStreamOptions,
-    std::optional<FrameMappings> customFrameMappings,
-    const std::string& deviceVariant) {
+    std::optional<FrameMappings> customFrameMappings
+   ) {
   addStream(
       streamIndex,
       AVMEDIA_TYPE_VIDEO,
       videoStreamOptions.device,
-      videoStreamOptions.ffmpegThreadCount,
-      deviceVariant);
+      videoStreamOptions.deviceVariant,
+      videoStreamOptions.ffmpegThreadCount);
 
   auto& streamMetadata =
       containerMetadata_.allStreamMetadata[activeStreamIndex_];

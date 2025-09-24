@@ -37,9 +37,9 @@ TORCH_LIBRARY(torchcodec_ns, m) {
       "create_from_tensor(Tensor video_tensor, str? seek_mode=None) -> Tensor");
   m.def("_convert_to_tensor(int decoder_ptr) -> Tensor");
   m.def(
-      "_add_video_stream(Tensor(a!) decoder, *, int? width=None, int? height=None, int? num_threads=None, str? dimension_order=None, int? stream_index=None, str? device=None, (Tensor, Tensor, Tensor)? custom_frame_mappings=None, str? color_conversion_library=None) -> ()");
+      "_add_video_stream(Tensor(a!) decoder, *, int? width=None, int? height=None, int? num_threads=None, str? dimension_order=None, int? stream_index=None, str? device=None, str? device_variant=None, (Tensor, Tensor, Tensor)? custom_frame_mappings=None, str? color_conversion_library=None) -> ()");
   m.def(
-      "add_video_stream(Tensor(a!) decoder, *, int? width=None, int? height=None, int? num_threads=None, str? dimension_order=None, int? stream_index=None, str? device=None, (Tensor, Tensor, Tensor)? custom_frame_mappings=None) -> ()");
+      "add_video_stream(Tensor(a!) decoder, *, int? width=None, int? height=None, int? num_threads=None, str? dimension_order=None, int? stream_index=None, str? device=None, str? device_variant=None, (Tensor, Tensor, Tensor)? custom_frame_mappings=None) -> ()");
   m.def(
       "add_audio_stream(Tensor(a!) decoder, *, int? stream_index=None, int? sample_rate=None, int? num_channels=None) -> ()");
   m.def("seek_to_pts(Tensor(a!) decoder, float seconds) -> ()");
@@ -224,6 +224,7 @@ void _add_video_stream(
     std::optional<std::string_view> dimension_order = std::nullopt,
     std::optional<int64_t> stream_index = std::nullopt,
     std::optional<std::string_view> device = std::nullopt,
+    std::optional<std::string_view> device_variant = std::nullopt,
     std::optional<std::tuple<at::Tensor, at::Tensor, at::Tensor>>
         custom_frame_mappings = std::nullopt,
     std::optional<std::string_view> color_conversion_library = std::nullopt) {
@@ -253,28 +254,18 @@ void _add_video_stream(
           ". color_conversion_library must be either filtergraph or swscale.");
     }
   }
-  // TODONVDEC:
-  // - All parsing logic of the the 'cuda:0:variant' string should probably
-  // happen in Python, and the core/C++ code should just accept a clean device
-  // string with a separate variant parameter.
-  // - the createTorchDevice function does 2 things: return a clean
-  // torch::Device, and also validate that a corresponding interface exists. We
-  // should separate both logics. Note that this pre-exists in main.
-  // - The variant should be part of the VideoStreamOptions struct when passed to the SingleStreamDecoder.
-  std::string deviceVariant = "default";
-  if (device.has_value()) {
-    std::string deviceStr = std::string(device.value());
-    videoStreamOptions.device = createTorchDevice(deviceStr);
 
-    // Extract variant from device string (format: "device_type:index:variant")
-    size_t firstColon = deviceStr.find(':');
-    if (firstColon != std::string::npos) {
-      size_t secondColon = deviceStr.find(':', firstColon + 1);
-      if (secondColon != std::string::npos) {
-        deviceVariant = deviceStr.substr(secondColon + 1);
-      }
-    }
+  if (!device.has_value()) {
+    device = "cpu";
   }
+  if (!device_variant.has_value()) {
+    device_variant = "default";
+  }
+  validateDeviceInterface(std::string(*device), std::string(*device_variant));
+
+  videoStreamOptions.device = torch::Device(std::string(*device));
+  videoStreamOptions.deviceVariant = *device_variant;
+
   std::optional<SingleStreamDecoder::FrameMappings> converted_mappings =
       custom_frame_mappings.has_value()
       ? std::make_optional(makeFrameMappings(custom_frame_mappings.value()))
@@ -283,8 +274,7 @@ void _add_video_stream(
   videoDecoder->addVideoStream(
       stream_index.value_or(-1),
       videoStreamOptions,
-      converted_mappings,
-      deviceVariant);
+      converted_mappings);
 }
 
 // Add a new video stream at `stream_index` using the provided options.
@@ -296,6 +286,7 @@ void add_video_stream(
     std::optional<std::string_view> dimension_order = std::nullopt,
     std::optional<int64_t> stream_index = std::nullopt,
     std::optional<std::string_view> device = std::nullopt,
+    std::optional<std::string_view> device_variant = std::nullopt,
     const std::optional<std::tuple<at::Tensor, at::Tensor, at::Tensor>>&
         custom_frame_mappings = std::nullopt) {
   _add_video_stream(
@@ -306,6 +297,7 @@ void add_video_stream(
       dimension_order,
       stream_index,
       device,
+      device_variant,
       custom_frame_mappings);
 }
 

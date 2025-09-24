@@ -140,6 +140,15 @@ class VideoDecoder:
 
         if isinstance(device, torch_device):
             device = str(device)
+        
+        # If device looks like "cuda:0:beta", make it "cuda:0" and set
+        # device_variant to "beta"
+        device_split = device.split(":")
+        if len(device_split) == 3:
+            device_variant = device_split[2]
+            device = ":".join(device_split[0:2])
+        else:
+            device_variant = "default"
 
         core.add_video_stream(
             self._decoder,
@@ -147,6 +156,7 @@ class VideoDecoder:
             dimension_order=dimension_order,
             num_threads=num_ffmpeg_threads,
             device=device,
+            device_variant=device_variant,
             custom_frame_mappings=custom_frame_mappings_data,
         )
 
