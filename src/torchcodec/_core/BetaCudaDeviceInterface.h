@@ -120,6 +120,9 @@ class BetaCudaDeviceInterface : public DeviceInterface {
   // Bitstream filter for MP4 to Annex B conversion
   UniqueAVBSFContext bitstreamFilter_;
 
+  // Default CUDA interface for color conversion (created once and reused)
+  std::unique_ptr<DeviceInterface> defaultCudaInterface_;
+
   // Helper methods for frame reordering
   FrameBufferSlot* findEmptySlot();
   FrameBufferSlot* findFrameWithExactPts(int64_t desiredPts);
