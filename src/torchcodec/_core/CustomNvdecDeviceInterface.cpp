@@ -24,23 +24,22 @@ extern "C" {
 
 namespace facebook::torchcodec {
 
-// Simplified NVDEC Cache Implementation following Cache.h patterns
-NVDECCache& NVDECCache::GetCache(int device_id) {
+NVDECCache& NVDECCache::GetCache(int deviceId) {
   static NVDECCache cache_inst[32]; // Support up to 32 GPUs like PyTorch
-  if (device_id == -1) {
-    cudaGetDevice(&device_id);
+  if (deviceId == -1) {
+    cudaGetDevice(&deviceId);
   }
-  return cache_inst[device_id];
+  return cache_inst[deviceId];
 }
 
-NVDECDecoderKey NVDECCache::createKey(CUVIDEOFORMAT* video_format) {
-  unsigned num_decode_surfaces = video_format->min_num_decode_surfaces;
+NVDECCacheKey NVDECCache::createKey(CUVIDEOFORMAT* video_format) {
+  unsigned char num_decode_surfaces = video_format->min_num_decode_surfaces;
 
   if (num_decode_surfaces == 0) {
     num_decode_surfaces = 20;  // Default fallback
   }
   
-  return NVDECDecoderKey{
+  return NVDECCacheKey{
     video_format->codec,
     video_format->coded_width,
     video_format->coded_height,
@@ -50,7 +49,7 @@ NVDECDecoderKey NVDECCache::createKey(CUVIDEOFORMAT* video_format) {
   };
 }
 
-UniqueCUvideodecoder NVDECCache::getDecoder(const NVDECDecoderKey& key) {
+UniqueCUvideodecoder NVDECCache::getDecoder(const NVDECCacheKey& key) {
   std::lock_guard<std::mutex> lock(cache_lock_);
   
   auto it = cache_.find(key);
@@ -64,7 +63,7 @@ UniqueCUvideodecoder NVDECCache::getDecoder(const NVDECDecoderKey& key) {
   return nullptr; // No cached decoder available
 }
 
-bool NVDECCache::returnDecoder(const NVDECDecoderKey& key, UniqueCUvideodecoder decoder) {
+bool NVDECCache::returnDecoder(const NVDECCacheKey& key, UniqueCUvideodecoder decoder) {
   if (!decoder) {
     return false;
   }
@@ -300,18 +299,13 @@ int CustomNvdecDeviceInterface::handleVideoSequence(
     CUVIDEOFORMAT* pVideoFormat) {
   TORCH_CHECK(pVideoFormat != nullptr, "Invalid video format");
 
-  // Store video format
   videoFormat_ = *pVideoFormat;
 
-  // Get or create decoder using simplified cache
   if (!decoder_) {
-    // Create cache key from video format
     decoderKey_ = NVDECCache::createKey(pVideoFormat);
     
-    // Try to get decoder from cache first
     decoder_ = NVDECCache::GetCache(device_.index()).getDecoder(decoderKey_);
     
-    // If no cached decoder available, create new one
     if (!decoder_) {
       decoder_ = NVDECCache::createDecoder(pVideoFormat);
     }
