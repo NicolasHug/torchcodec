@@ -38,7 +38,7 @@ done
 # Standard library search paths
 SEARCH_PATHS=(
     "/usr/lib"
-    "/usr/lib64" 
+    "/usr/lib64"
     "/usr/lib/x86_64-linux-gnu"
     "/usr/local/lib"
     "/usr/local/lib64"
@@ -59,7 +59,7 @@ done
 # Library name variations to search for
 LIB_PATTERNS=(
     "libnvcuvid.so*"
-    "nvcuvid.so*" 
+    "nvcuvid.so*"
     "libnvcuvid.a"
     "nvcuvid.a"
     "libnvcuvid*"

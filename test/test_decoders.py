@@ -37,13 +37,13 @@ from .utils import (
     NASA_AUDIO_MP3,
     NASA_AUDIO_MP3_44100,
     NASA_VIDEO,
-    TEST_SRC_2_720P,
     needs_cuda,
     psnr,
     SINE_MONO_S16,
     SINE_MONO_S32,
     SINE_MONO_S32_44100,
     SINE_MONO_S32_8000,
+    TEST_SRC_2_720P,
 )
 
 
@@ -1399,7 +1399,7 @@ class TestVideoDecoder:
 
         decoder.get_frames_played_at(torch.tensor([0, 1], dtype=torch.int))
         decoder.get_frames_played_at(torch.tensor([0, 1], dtype=torch.float))
-    
+
     @needs_cuda
     @pytest.mark.parametrize("asset", (NASA_VIDEO, TEST_SRC_2_720P, BT709_FULL_RANGE))
     @pytest.mark.parametrize("contiguous_indices", (True, False))
@@ -1441,15 +1441,23 @@ class TestVideoDecoder:
         beta_frames = beta_decoder.get_frames_at(indices)
         torch.testing.assert_close(beta_frames.data, ref_frames.data, rtol=0, atol=0)
         torch.testing.assert_close(beta_frames.pts_seconds, ref_frames.pts_seconds)
-        torch.testing.assert_close(beta_frames.duration_seconds, ref_frames.duration_seconds)
-    
+        torch.testing.assert_close(
+            beta_frames.duration_seconds, ref_frames.duration_seconds
+        )
+
     @needs_cuda
     def test_beta_cuda_interface_error(self):
-        with pytest.raises(RuntimeError, match="Unsupported codec for BETA CUDA interface: av1"):
+        with pytest.raises(
+            RuntimeError, match="Unsupported codec for BETA CUDA interface: av1"
+        ):
             VideoDecoder(AV1_VIDEO.path, device="cuda:0:beta")
-        with pytest.raises(RuntimeError, match="Unsupported codec for BETA CUDA interface: hevc"):
+        with pytest.raises(
+            RuntimeError, match="Unsupported codec for BETA CUDA interface: hevc"
+        ):
             VideoDecoder(H265_VIDEO.path, device="cuda:0:beta")
-        with pytest.raises(RuntimeError, match="Seek mode must be exact for BETA CUDA interface."):
+        with pytest.raises(
+            RuntimeError, match="Seek mode must be exact for BETA CUDA interface."
+        ):
             VideoDecoder(NASA_VIDEO.path, device="cuda:0:beta", seek_mode="approximate")
         with pytest.raises(RuntimeError, match="Unsupported device"):
             VideoDecoder(NASA_VIDEO.path, device="cuda:0:bad_variant")

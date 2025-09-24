@@ -84,8 +84,7 @@ class SingleStreamDecoder {
   void addVideoStream(
       int streamIndex,
       const VideoStreamOptions& videoStreamOptions = VideoStreamOptions(),
-      std::optional<FrameMappings> customFrameMappings = std::nullopt
-      );
+      std::optional<FrameMappings> customFrameMappings = std::nullopt);
   void addAudioStream(
       int streamIndex,
       const AudioStreamOptions& audioStreamOptions = AudioStreamOptions());

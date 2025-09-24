@@ -156,7 +156,6 @@ BetaCudaDeviceInterface::BetaCudaDeviceInterface(const torch::Device& device)
   // TODONVDEC: init size should probably be min_num_decode_surfaces from video
   // format
   frameBuffer_.resize(4);
-
 }
 
 BetaCudaDeviceInterface::~BetaCudaDeviceInterface() {
@@ -616,12 +615,13 @@ void BetaCudaDeviceInterface::convertAVFrameToFrameOutput(
       avFrame->format == AV_PIX_FMT_CUDA,
       "Expected CUDA format frame from BETA CUDA interface");
 
-  // TODONVDEC P1: we use the 'default' cuda device interface for color conversion.
-  // That's a temporary hack to make things work.
-  // we should abstract the color conversion stuff separately.
+  // TODONVDEC P1: we use the 'default' cuda device interface for color
+  // conversion. That's a temporary hack to make things work. we should abstract
+  // the color conversion stuff separately.
   if (!defaultCudaInterface_) {
     auto cudaDevice = torch::Device(torch::kCUDA);
-    defaultCudaInterface_ = std::unique_ptr<DeviceInterface>(createDeviceInterface(cudaDevice));
+    defaultCudaInterface_ =
+        std::unique_ptr<DeviceInterface>(createDeviceInterface(cudaDevice));
     AVCodecContext dummyCodecContext = {};
     defaultCudaInterface_->initializeContext(&dummyCodecContext);
   }

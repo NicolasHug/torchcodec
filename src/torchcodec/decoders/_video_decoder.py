@@ -140,7 +140,7 @@ class VideoDecoder:
 
         if isinstance(device, torch_device):
             device = str(device)
-        
+
         # If device looks like "cuda:0:beta", make it "cuda:0" and set
         # device_variant to "beta"
         device_split = device.split(":")

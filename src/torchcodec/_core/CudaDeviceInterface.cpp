@@ -217,10 +217,10 @@ std::unique_ptr<FiltersContext> CudaDeviceInterface::initializeFiltersContext(
   }
 
   if (avFrame->hw_frames_ctx == nullptr) {
-    // TODONVDEC P2 needed for beta interface, should get rid of this or improve the logic.
+    // TODONVDEC P2 needed for beta interface, should get rid of this or improve
+    // the logic.
     return nullptr;
   }
-
 
   auto hwFramesCtx =
       reinterpret_cast<AVHWFramesContext*>(avFrame->hw_frames_ctx->data);

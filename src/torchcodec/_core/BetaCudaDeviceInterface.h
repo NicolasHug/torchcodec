@@ -6,23 +6,22 @@
 
 #pragma once
 
-#include "src/torchcodec/_core/DeviceInterface.h"
 #include "src/torchcodec/_core/Cache.h"
+#include "src/torchcodec/_core/DeviceInterface.h"
 #include "src/torchcodec/_core/FFMPEGCommon.h"
 #include "src/torchcodec/_core/NVDECCache.h"
 
+#include <map>
 #include <memory>
 #include <mutex>
 #include <queue>
 #include <unordered_map>
 #include <vector>
-#include <map>
 
 #include "src/torchcodec/_core/nvcuvid_include/cuviddec.h"
 #include "src/torchcodec/_core/nvcuvid_include/nvcuvid.h"
 
 namespace facebook::torchcodec {
-
 
 // BETA CUDA device interface that provides direct control over NVDEC
 // while keeping FFmpeg for demuxing
@@ -58,12 +57,13 @@ class BetaCudaDeviceInterface : public DeviceInterface {
     return true;
   }
 
-  // Returns AVSUCCESS on success, AVERROR(EAGAIN) if decoder queue full, or other AVERROR on failure
+  // Returns AVSUCCESS on success, AVERROR(EAGAIN) if decoder queue full, or
+  // other AVERROR on failure
   int sendPacket(ReferenceAVPacket& packet);
 
-  // Receive decoded frame (non-blocking) 
-  // Returns AVSUCCESS on success, AVERROR(EAGAIN) if no frame ready, AVERROR_EOF if end of stream,
-  // or other AVERROR on failure
+  // Receive decoded frame (non-blocking)
+  // Returns AVSUCCESS on success, AVERROR(EAGAIN) if no frame ready,
+  // AVERROR_EOF if end of stream, or other AVERROR on failure
   int receiveFrame(UniqueAVFrame& frame, int64_t desiredPts);
 
   void flush();
@@ -97,24 +97,24 @@ class BetaCudaDeviceInterface : public DeviceInterface {
       memset(&dispInfo, 0, sizeof(dispInfo));
     }
   };
-  
+
   static constexpr int MAX_DECODE_SURFACES = 32; // NVDEC max
   std::vector<FrameBufferSlot> frameBuffer_;
   std::mutex frameBufferMutex_;
 
   std::queue<int64_t> packetsPtsQueue;
 
-
   // EOF tracking
   bool eofSent_ = false;
-  
+
   // Flush flag to prevent decode operations during flush (like DALI's flush_)
   bool flush_ = false;
-  
+
   // Store timeBase for duration calculations
   AVRational timeBase_ = {0, 0};
-  
-  // Store frame rate for duration calculations (fallback when NVDEC frame rate is unavailable)
+
+  // Store frame rate for duration calculations (fallback when NVDEC frame rate
+  // is unavailable)
   AVRational fallbackFrameRate_ = {0, 0};
 
   // Bitstream filter for MP4 to Annex B conversion

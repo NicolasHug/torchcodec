@@ -114,17 +114,17 @@ function(make_torchcodec_libraries
 
         # Try the normal way first
         find_library(NVCUVID_LIBRARY NAMES nvcuvid)
-        
+
         # If not found, try with version suffix
         if(NOT NVCUVID_LIBRARY)
             find_library(NVCUVID_LIBRARY NAMES nvcuvid.1 PATHS /usr/lib64 /usr/lib)
         endif()
-        
+
         # Or specify the full path directly
         if(NOT NVCUVID_LIBRARY)
             set(NVCUVID_LIBRARY "/usr/lib64/libnvcuvid.so.1")
         endif()
-        
+
         if(NVCUVID_LIBRARY)
             message(STATUS "Found NVCUVID: ${NVCUVID_LIBRARY}")
         else()
