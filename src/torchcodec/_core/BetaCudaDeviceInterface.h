@@ -36,6 +36,9 @@ class BetaCudaDeviceInterface : public DeviceInterface {
 
   void initializeContext(AVCodecContext* codecContext) override;
 
+  // Post-initialization setup with stream information
+  void postInitialize(const AVStream* stream);
+
   // Set the timeBase for duration calculations
   void setTimeBase(const AVRational& timeBase);
 
@@ -64,6 +67,12 @@ class BetaCudaDeviceInterface : public DeviceInterface {
   int receiveFrame(UniqueAVFrame& frame, int64_t desiredPts);
 
   void flush();
+
+  // Apply bitstream filter if needed, returns pointer to packet to use
+  ReferenceAVPacket* applyBSF(
+      ReferenceAVPacket& packet,
+      AutoAVPacket& filteredAutoPacket,
+      ReferenceAVPacket& filteredPacket) override;
 
  public:
   // NVDEC callback functions (must be public for C callbacks)
@@ -108,11 +117,17 @@ class BetaCudaDeviceInterface : public DeviceInterface {
   // Store frame rate for duration calculations (fallback when NVDEC frame rate is unavailable)
   AVRational fallbackFrameRate_ = {0, 0};
 
+  // Bitstream filter for MP4 to Annex B conversion
+  UniqueAVBSFContext bitstreamFilter_;
+
   // Helper methods for frame reordering
   FrameBufferSlot* findEmptySlot();
   FrameBufferSlot* findFrameWithExactPts(int64_t desiredPts);
 
   void createVideoParser();
+
+  // Initialize bitstream filter for H264 MP4 to Annex B conversion
+  void initializeBitstreamFilter(const AVCodecParameters* codecpar);
 
   // Convert CUDA frame pointer to AVFrame
   UniqueAVFrame convertCudaFrameToAVFrame(

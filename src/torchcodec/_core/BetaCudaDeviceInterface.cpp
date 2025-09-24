@@ -14,9 +14,9 @@
 #include "src/torchcodec/_core/FFMPEGCommon.h"
 #include "src/torchcodec/_core/NVDECCache.h"
 
+#include <cuda_runtime.h> // For cudaStreamSynchronize
 #include "src/torchcodec/_core/nvcuvid_include/cuviddec.h"
 #include "src/torchcodec/_core/nvcuvid_include/nvcuvid.h"
-#include <cuda_runtime.h>  // For cudaStreamSynchronize
 
 extern "C" {
 #include <libavutil/hwcontext_cuda.h>
@@ -24,7 +24,6 @@ extern "C" {
 }
 
 namespace facebook::torchcodec {
-
 
 namespace {
 
@@ -67,26 +66,48 @@ static UniqueCUvideodecoder createDecoder(CUVIDEOFORMAT* video_format) {
   caps.eChromaFormat = chroma_format;
   caps.nBitDepthMinus8 = bit_depth_luma_minus8;
   CUresult caps_result = cuvidGetDecoderCaps(&caps);
-  TORCH_CHECK(caps_result == CUDA_SUCCESS, "Failed to get decoder caps: ", caps_result);
+  TORCH_CHECK(
+      caps_result == CUDA_SUCCESS, "Failed to get decoder caps: ", caps_result);
 
-  TORCH_CHECK(caps.bIsSupported,
-              "Codec configuration not supported on this GPU. "
-              "Codec: ", static_cast<int>(codec_type),
-              ", chroma format: ", static_cast<int>(chroma_format),
-              ", bit depth: ", bit_depth_luma_minus8 + 8);
+  TORCH_CHECK(
+      caps.bIsSupported,
+      "Codec configuration not supported on this GPU. "
+      "Codec: ",
+      static_cast<int>(codec_type),
+      ", chroma format: ",
+      static_cast<int>(chroma_format),
+      ", bit depth: ",
+      bit_depth_luma_minus8 + 8);
 
-  TORCH_CHECK(width >= caps.nMinWidth && height >= caps.nMinHeight,
-              "Video is too small in at least one dimension. Provided: ",
-              width, "x", height, " vs supported:", caps.nMinWidth, "x", caps.nMinHeight);
+  TORCH_CHECK(
+      width >= caps.nMinWidth && height >= caps.nMinHeight,
+      "Video is too small in at least one dimension. Provided: ",
+      width,
+      "x",
+      height,
+      " vs supported:",
+      caps.nMinWidth,
+      "x",
+      caps.nMinHeight);
 
-  TORCH_CHECK(width <= caps.nMaxWidth && height <= caps.nMaxHeight,
-              "Video is too large in at least one dimension. Provided: ",
-              width, "x", height, " vs supported:", caps.nMaxWidth, "x", caps.nMaxHeight);
+  TORCH_CHECK(
+      width <= caps.nMaxWidth && height <= caps.nMaxHeight,
+      "Video is too large in at least one dimension. Provided: ",
+      width,
+      "x",
+      height,
+      " vs supported:",
+      caps.nMaxWidth,
+      "x",
+      caps.nMaxHeight);
 
-  TORCH_CHECK(width * height / 256 <= caps.nMaxMBCount,
-              "Video is too large (too many macroblocks). "
-              "Provided (width * height / 256): ",
-              width * height / 256, " vs supported:", caps.nMaxMBCount);
+  TORCH_CHECK(
+      width * height / 256 <= caps.nMaxMBCount,
+      "Video is too large (too many macroblocks). "
+      "Provided (width * height / 256): ",
+      width * height / 256,
+      " vs supported:",
+      caps.nMaxMBCount);
 
   // Create new decoder
   CUVIDDECODECREATEINFO decoder_info;
@@ -99,8 +120,10 @@ static UniqueCUvideodecoder createDecoder(CUVIDEOFORMAT* video_format) {
   decoder_info.ulWidth = width;
   decoder_info.ulMaxHeight = height;
   decoder_info.ulMaxWidth = width;
-  decoder_info.ulTargetHeight = video_format->display_area.bottom - video_format->display_area.top;
-  decoder_info.ulTargetWidth = video_format->display_area.right - video_format->display_area.left;
+  decoder_info.ulTargetHeight =
+      video_format->display_area.bottom - video_format->display_area.top;
+  decoder_info.ulTargetWidth =
+      video_format->display_area.right - video_format->display_area.left;
   decoder_info.ulNumDecodeSurfaces = num_decode_surfaces;
   decoder_info.ulNumOutputSurfaces = 2;
   decoder_info.ulCreationFlags = cudaVideoCreate_PreferCUVID;
@@ -114,7 +137,8 @@ static UniqueCUvideodecoder createDecoder(CUVIDEOFORMAT* video_format) {
 
   CUvideodecoder raw_decoder;
   CUresult result = cuvidCreateDecoder(&raw_decoder, &decoder_info);
-  TORCH_CHECK(result == CUDA_SUCCESS, "Failed to create NVDEC decoder: ", result);
+  TORCH_CHECK(
+      result == CUDA_SUCCESS, "Failed to create NVDEC decoder: ", result);
 
   // Wrap in unique_ptr with custom deleter
   return UniqueCUvideodecoder(raw_decoder, CUvideoDecoderDeleter{});
@@ -122,16 +146,15 @@ static UniqueCUvideodecoder createDecoder(CUVIDEOFORMAT* video_format) {
 
 } // namespace
 
-BetaCudaDeviceInterface::BetaCudaDeviceInterface(
-    const torch::Device& device)
+BetaCudaDeviceInterface::BetaCudaDeviceInterface(const torch::Device& device)
     : DeviceInterface(device) {
-  TORCH_CHECK(
-      g_cuda_beta, "BetaCudaDeviceInterface was not registered!");
+  TORCH_CHECK(g_cuda_beta, "BetaCudaDeviceInterface was not registered!");
   TORCH_CHECK(
       device_.type() == torch::kCUDA, "Unsupported device: ", device_.str());
-  
+
   // Initialize frame buffer for B-frame reordering
-  // TODONVDEC: init size should probably be min_num_decode_surfaces from video format
+  // TODONVDEC: init size should probably be min_num_decode_surfaces from video
+  // format
   frameBuffer_.resize(4);
 }
 
@@ -147,7 +170,8 @@ BetaCudaDeviceInterface::~BetaCudaDeviceInterface() {
 
   // Return decoder to cache if we have one
   if (decoder_) {
-    NVDECCache::GetCache(device_.index()).returnDecoder(&videoFormat_, std::move(decoder_));
+    NVDECCache::GetCache(device_.index())
+        .returnDecoder(&videoFormat_, std::move(decoder_));
   }
 
   // Clean up video parser
@@ -161,15 +185,13 @@ BetaCudaDeviceInterface::~BetaCudaDeviceInterface() {
 
 std::optional<const AVCodec*> BetaCudaDeviceInterface::findCodec(
     const AVCodecID& codecId) {
-
   // We bypass FFmpeg codec selection entirely
   // We'll handle the codec selection in our own NVDEC initialization
   (void)codecId; // Suppress unused parameter warning
   return std::nullopt;
 }
 
-void BetaCudaDeviceInterface::initializeContext(
-    AVCodecContext* codecContext) {
+void BetaCudaDeviceInterface::initializeContext(AVCodecContext* codecContext) {
   // Don't set hw_device_ctx - we handle decoding directly with NVDEC SDK
   // Just ensure CUDA context exists for PyTorch tensors
   torch::Tensor dummyTensor = torch::empty(
@@ -188,8 +210,9 @@ void BetaCudaDeviceInterface::initializeContext(
           avcodec_get_name(codecContext->codec_id));
   }
 
-  // TODONVDEC figure out why this is needed and where videoFormat_ is actually used.
-  // Maybe this isn't needed at all since this gets overridden in handleVideoSequence?
+  // TODONVDEC figure out why this is needed and where videoFormat_ is actually
+  // used. Maybe this isn't needed at all since this gets overridden in
+  // handleVideoSequence?
   memset(&videoFormat_, 0, sizeof(videoFormat_));
   videoFormat_.codec = nvCodec;
   videoFormat_.coded_width = 0; // Will be set when we get the first frame
@@ -201,6 +224,50 @@ void BetaCudaDeviceInterface::initializeContext(
   createVideoParser();
 }
 
+void BetaCudaDeviceInterface::postInitialize(const AVStream* stream) {
+  TORCH_CHECK(stream != nullptr, "Stream cannot be null");
+
+  // Initialize bitstream filter for H264 MP4 to Annex B conversion
+  if (stream->codecpar->codec_id == AV_CODEC_ID_H264) {
+    initializeBitstreamFilter(stream->codecpar);
+  }
+}
+
+void BetaCudaDeviceInterface::initializeBitstreamFilter(
+    const AVCodecParameters* codecpar) {
+  TORCH_CHECK(codecpar != nullptr, "CodecParameters cannot be null");
+
+  // Only initialize BSF for H264
+  if (codecpar->codec_id != AV_CODEC_ID_H264) {
+    return;
+  }
+
+  const AVBitStreamFilter* avBSF = av_bsf_get_by_name("h264_mp4toannexb");
+  TORCH_CHECK(
+      avBSF != nullptr, "Failed to find h264_mp4toannexb bitstream filter");
+
+  AVBSFContext* avBSFContext = nullptr;
+  int retVal = av_bsf_alloc(avBSF, &avBSFContext);
+  TORCH_CHECK(
+      retVal >= AVSUCCESS,
+      "Failed to allocate bitstream filter: ",
+      getFFMPEGErrorStringFromErrorCode(retVal));
+
+  bitstreamFilter_.reset(avBSFContext);
+
+  retVal = avcodec_parameters_copy(bitstreamFilter_->par_in, codecpar);
+  TORCH_CHECK(
+      retVal >= AVSUCCESS,
+      "Failed to copy codec parameters: ",
+      getFFMPEGErrorStringFromErrorCode(retVal));
+
+  retVal = av_bsf_init(bitstreamFilter_.get());
+  TORCH_CHECK(
+      retVal == AVSUCCESS,
+      "Failed to initialize bitstream filter: ",
+      getFFMPEGErrorStringFromErrorCode(retVal));
+}
+
 void BetaCudaDeviceInterface::setTimeBase(const AVRational& timeBase) {
   timeBase_ = timeBase;
 }
@@ -209,13 +276,12 @@ void BetaCudaDeviceInterface::setFrameRate(const AVRational& frameRate) {
   fallbackFrameRate_ = frameRate;
 }
 
-
 void BetaCudaDeviceInterface::createVideoParser() {
   if (parserCreated_) {
     // TODONVDEC - is this needed?
     return;
   }
-  
+
   // Set up video parser parameters
   CUVIDPARSERPARAMS parserParams = {};
   parserParams.CodecType = videoFormat_.codec;
@@ -228,7 +294,8 @@ void BetaCudaDeviceInterface::createVideoParser() {
   parserParams.pUserData = this;
   parserParams.pfnSequenceCallback = HandleVideoSequence;
   parserParams.pfnDecodePicture = HandlePictureDecode;
-  parserParams.pfnDisplayPicture = nullptr;  // Like DALI - we handle display manually
+  parserParams.pfnDisplayPicture =
+      nullptr; // Like DALI - we handle display manually
 
   CUresult result = cuvidCreateVideoParser(&videoParser_, &parserParams);
   TORCH_CHECK(
@@ -241,8 +308,7 @@ void BetaCudaDeviceInterface::createVideoParser() {
 // the parser encounters the start of the headers, or when "there is a change in
 // the sequence" - which, I assume means a change in any one of CUVIDEOFORMAT
 // fields?
-int BetaCudaDeviceInterface::handleVideoSequence(
-    CUVIDEOFORMAT* pVideoFormat) {
+int BetaCudaDeviceInterface::handleVideoSequence(CUVIDEOFORMAT* pVideoFormat) {
   TORCH_CHECK(pVideoFormat != nullptr, "Invalid video format");
 
   videoFormat_ = *pVideoFormat;
@@ -253,7 +319,7 @@ int BetaCudaDeviceInterface::handleVideoSequence(
     if (!decoder_) {
       decoder_ = createDecoder(pVideoFormat);
     }
-    
+
     TORCH_CHECK(decoder_, "Failed to get or create decoder");
   }
 
@@ -261,71 +327,69 @@ int BetaCudaDeviceInterface::handleVideoSequence(
 }
 
 // Parser triggers this callback when bitstream data for one frame is ready
-int BetaCudaDeviceInterface::handlePictureDecode(
-    CUVIDPICPARAMS* pPicParams) {
-
+int BetaCudaDeviceInterface::handlePictureDecode(CUVIDPICPARAMS* pPicParams) {
   // Like DALI: if we're flushing, don't process new decode operations
   if (flush_) {
     return 0;
   }
 
   TORCH_CHECK(pPicParams != nullptr, "Invalid picture parameters");
-  TORCH_CHECK(
-      decoder_, "Decoder not initialized before picture decode");
+  TORCH_CHECK(decoder_, "Decoder not initialized before picture decode");
 
-  CUresult result = cuvidDecodePicture(static_cast<CUvideodecoder>(decoder_.get()), pPicParams);
-  
+  CUresult result = cuvidDecodePicture(
+      static_cast<CUvideodecoder>(decoder_.get()), pPicParams);
+
   if (result != CUDA_SUCCESS) {
     return 0;
   }
-  
+
   // Like DALI: manually create display info and handle picture display directly
   CUVIDPARSERDISPINFO dispInfo = {};
   dispInfo.picture_index = pPicParams->CurrPicIdx;
   dispInfo.progressive_frame = !pPicParams->field_pic_flag;
   dispInfo.top_field_first = pPicParams->bottom_field_flag ^ 1;
   dispInfo.repeat_first_field = 0;
-  
+
   // TODONVDEC the pipe may be empty, handle that.
-  TORCH_CHECK(!packetsPtsQueue.empty(), "PTS queue is empty when decoding a frame");
-  
-  // Simple PTS assignment: use the PTS directly from the packet queue in FIFO order
-  // Each decoded frame gets the PTS from the corresponding packet in decode order
+  TORCH_CHECK(
+      !packetsPtsQueue.empty(), "PTS queue is empty when decoding a frame");
+
+  // Simple PTS assignment: use the PTS directly from the packet queue in FIFO
+  // order Each decoded frame gets the PTS from the corresponding packet in
+  // decode order
   int64_t framePts = packetsPtsQueue.front();
   packetsPtsQueue.pop();
-  
+
   // Set the PTS in the display info
   dispInfo.timestamp = framePts;
-  
+
   // Buffer frame for B-frame reordering (like DALI)
   std::lock_guard<std::mutex> lock(frameBufferMutex_);
   FrameBufferSlot* slot = findEmptySlot();
   slot->dispInfo = dispInfo;
   slot->pts = framePts;
-  
-  
+
   slot->occupied = true;
   return 1;
 }
 
 int BetaCudaDeviceInterface::sendPacket(ReferenceAVPacket& packet) {
+  if (!parserCreated_) {
+    return AVERROR(EINVAL);
+  }
 
-    if (!parserCreated_) {
-      return AVERROR(EINVAL);
-    }
-   
-    CUVIDSOURCEDATAPACKET cudaPacket = {0};
-    
-    if (packet.get() && packet->data && packet->size > 0) {
-      // Regular packet with data
+  CUVIDSOURCEDATAPACKET cudaPacket = {0};
+
+  if (packet.get() && packet->data && packet->size > 0) {
+    // Regular packet with data
     cudaPacket.payload = packet->data;
     cudaPacket.payload_size = packet->size;
     cudaPacket.flags = CUVID_PKT_TIMESTAMP;
     cudaPacket.timestamp = packet->pts;
-    
+
     // Like DALI: store PTS in queue to assign to frames as they come out
     packetsPtsQueue.push(packet->pts);
-    
+
   } else {
     // End of stream packet
     cudaPacket.flags = CUVID_PKT_ENDOFSTREAM;
@@ -340,20 +404,43 @@ int BetaCudaDeviceInterface::sendPacket(ReferenceAVPacket& packet) {
   return AVSUCCESS;
 }
 
-int BetaCudaDeviceInterface::receiveFrame(UniqueAVFrame& frame, int64_t desiredPts) {
-  
+// TODONVDEC P0: cleanup this raw pointer / reference monstruosity.
+ReferenceAVPacket* BetaCudaDeviceInterface::applyBSF(
+    ReferenceAVPacket& packet,
+    AutoAVPacket& filteredAutoPacket,
+    ReferenceAVPacket& filteredPacket) {
+  if (!bitstreamFilter_) {
+    return &packet;
+  }
+  int retVal = av_bsf_send_packet(bitstreamFilter_.get(), packet.get());
+  TORCH_CHECK(
+      retVal >= AVSUCCESS,
+      "Failed to send packet to bitstream filter: ",
+      getFFMPEGErrorStringFromErrorCode(retVal));
+
+  retVal = av_bsf_receive_packet(bitstreamFilter_.get(), filteredPacket.get());
+  TORCH_CHECK(
+      retVal >= AVSUCCESS,
+      "Failed to receive packet from bitstream filter: ",
+      getFFMPEGErrorStringFromErrorCode(retVal));
+
+  return &filteredPacket;
+}
+
+int BetaCudaDeviceInterface::receiveFrame(
+    UniqueAVFrame& frame,
+    int64_t desiredPts) {
   std::lock_guard<std::mutex> lock(frameBufferMutex_);
-  
-  
+
   FrameBufferSlot* slot = findFrameWithExactPts(desiredPts);
   if (slot == nullptr) {
     // TODONVDEC: Need to handle case where frame buffer is full!!!!!
     return AVERROR(EAGAIN);
-  } 
+  }
 
   CUVIDPARSERDISPINFO dispInfo = slot->dispInfo;
   int64_t pts = slot->pts;
-  
+
   slot->occupied = false;
   slot->pts = -1;
 
@@ -375,19 +462,16 @@ int BetaCudaDeviceInterface::receiveFrame(UniqueAVFrame& frame, int64_t desiredP
     return AVERROR_EXTERNAL;
   }
 
-  
   // Convert the NVDEC frame to AVFrame, passing the correct PTS
   frame = convertCudaFrameToAVFrame(framePtr, pitch, dispInfo, timeBase_);
 
   // Unmap the frame
   cuvidUnmapVideoFrame(static_cast<CUvideodecoder>(decoder_.get()), framePtr);
 
-
   return AVSUCCESS;
 }
 
 void BetaCudaDeviceInterface::flush() {
-
   // Set flush flag like DALI to prevent new decode operations
   flush_ = true;
 
@@ -418,18 +502,13 @@ void BetaCudaDeviceInterface::flush() {
   }
 
   // Synchronize CUDA stream to ensure all operations complete
-  // TODONVDEC make sure this is syncing the right stream, not necessarily stream 0
+  // TODONVDEC make sure this is syncing the right stream, not necessarily
+  // stream 0
   cudaStreamSynchronize(0);
-
-  
-  
 
   // Reset EOF flag so we can decode more (like DALI does)
   eofSent_ = false;
-
 }
-
-
 
 UniqueAVFrame BetaCudaDeviceInterface::convertCudaFrameToAVFrame(
     CUdeviceptr framePtr,
@@ -446,7 +525,6 @@ UniqueAVFrame BetaCudaDeviceInterface::convertCudaFrameToAVFrame(
   TORCH_CHECK(width > 0 && height > 0, "Invalid frame dimensions");
   TORCH_CHECK(pitch >= width, "Pitch must be >= width");
 
-
   // Allocate AVFrame
   UniqueAVFrame avFrame(av_frame_alloc());
   TORCH_CHECK(avFrame.get() != nullptr, "Failed to allocate AVFrame");
@@ -455,43 +533,46 @@ UniqueAVFrame BetaCudaDeviceInterface::convertCudaFrameToAVFrame(
   avFrame->width = width;
   avFrame->height = height;
   avFrame->format = AV_PIX_FMT_CUDA; // Indicate this is GPU data
-  avFrame->pts = dispInfo.timestamp; // This PTS was set correctly by handlePictureDisplay
-  
-  // Calculate frame duration from NVDEC frame rate, fallback frame rate, and stream timebase
+  avFrame->pts =
+      dispInfo.timestamp; // This PTS was set correctly by handlePictureDisplay
+
+  // Calculate frame duration from NVDEC frame rate, fallback frame rate, and
+  // stream timebase
   AVRational effectiveFrameRate = {0, 0};
-  
+
   // First try NVDEC frame rate
-  if (videoFormat_.frame_rate.numerator > 0 && videoFormat_.frame_rate.denominator > 0) {
+  if (videoFormat_.frame_rate.numerator > 0 &&
+      videoFormat_.frame_rate.denominator > 0) {
     effectiveFrameRate.num = videoFormat_.frame_rate.numerator;
     effectiveFrameRate.den = videoFormat_.frame_rate.denominator;
-  } 
+  }
   // Fallback to FFmpeg frame rate if NVDEC frame rate is unavailable
   else if (fallbackFrameRate_.num > 0 && fallbackFrameRate_.den > 0) {
     effectiveFrameRate = fallbackFrameRate_;
   }
-  
+
   if (effectiveFrameRate.num > 0 && effectiveFrameRate.den > 0 &&
       timeBase.num > 0 && timeBase.den > 0) {
     // Duration in seconds = frame_rate.den / frame_rate.num
-    // Duration in timebase units = (duration_seconds * timeBase.den) / timeBase.num
-    // = (frame_rate.den * timeBase.den) / (frame_rate.num * timeBase.num)
-    avFrame->duration = (int64_t)((effectiveFrameRate.den * timeBase.den) / 
+    // Duration in timebase units = (duration_seconds * timeBase.den) /
+    // timeBase.num = (frame_rate.den * timeBase.den) / (frame_rate.num *
+    // timeBase.num)
+    avFrame->duration = (int64_t)((effectiveFrameRate.den * timeBase.den) /
                                   (effectiveFrameRate.num * timeBase.num));
   } else {
     avFrame->duration = 0; // Unknown duration
   }
-  
 
   // Set color space and color range from NVDEC video format (like DALI does)
   // This is crucial for proper color conversion!
-  
+
   // Map NVDEC matrix coefficients to FFmpeg color space
   switch (videoFormat_.video_signal_description.matrix_coefficients) {
-    case 1:  // ITU-R BT.709
+    case 1: // ITU-R BT.709
       avFrame->colorspace = AVCOL_SPC_BT709;
       break;
-    case 5:  // ITU-R BT.470-2 System B, G (BT.601 PAL)
-    case 6:  // ITU-R BT.601-6 NTSC  
+    case 5: // ITU-R BT.470-2 System B, G (BT.601 PAL)
+    case 6: // ITU-R BT.601-6 NTSC
       avFrame->colorspace = AVCOL_SPC_SMPTE170M; // BT.601
       break;
     default:
@@ -499,19 +580,19 @@ UniqueAVFrame BetaCudaDeviceInterface::convertCudaFrameToAVFrame(
       avFrame->colorspace = AVCOL_SPC_SMPTE170M;
       break;
   }
-  
+
   // Set color range from full range flag
   if (videoFormat_.video_signal_description.video_full_range_flag) {
-    avFrame->color_range = AVCOL_RANGE_JPEG;  // Full range (0-255)
+    avFrame->color_range = AVCOL_RANGE_JPEG; // Full range (0-255)
   } else {
-    avFrame->color_range = AVCOL_RANGE_MPEG;  // Limited range (16-235)
+    avFrame->color_range = AVCOL_RANGE_MPEG; // Limited range (16-235)
   }
-  
 
   // For NVDEC output in NV12 format, we need to set up the data pointers
   // The framePtr points to the beginning of the NV12 data
   avFrame->data[0] = reinterpret_cast<uint8_t*>(framePtr); // Y plane
-  avFrame->data[1] = reinterpret_cast<uint8_t*>(framePtr + (pitch * height)); // UV plane (using pitch, not width)
+  avFrame->data[1] = reinterpret_cast<uint8_t*>(
+      framePtr + (pitch * height)); // UV plane (using pitch, not width)
   avFrame->data[2] = nullptr;
   avFrame->data[3] = nullptr;
 
@@ -530,10 +611,8 @@ void BetaCudaDeviceInterface::convertAVFrameToFrameOutput(
     UniqueAVFrame& avFrame,
     FrameOutput& frameOutput,
     std::optional<torch::Tensor> preAllocatedOutputTensor) {
-
   // Store timeBase for duration calculations in convertCudaFrameToAVFrame
   timeBase_ = timeBase;
-
 
   TORCH_CHECK(
       avFrame->format == AV_PIX_FMT_CUDA,
@@ -560,10 +639,11 @@ void BetaCudaDeviceInterface::convertAVFrameToFrameOutput(
   frameOutput.data = cudaFrameOutput.data.to(device_);
 }
 
-// Helper method to find an empty slot in frame buffer (like DALI's FindEmptySlot)
-BetaCudaDeviceInterface::FrameBufferSlot* 
+// Helper method to find an empty slot in frame buffer (like DALI's
+// FindEmptySlot)
+BetaCudaDeviceInterface::FrameBufferSlot*
 BetaCudaDeviceInterface::findEmptySlot() {
-  for (auto& slot: frameBuffer_) {
+  for (auto& slot : frameBuffer_) {
     if (!slot.occupied) {
       return &slot;
     }
@@ -574,9 +654,9 @@ BetaCudaDeviceInterface::findEmptySlot() {
 }
 
 // Helper method to find frame with exact PTS match
-BetaCudaDeviceInterface::FrameBufferSlot* 
+BetaCudaDeviceInterface::FrameBufferSlot*
 BetaCudaDeviceInterface::findFrameWithExactPts(int64_t desiredPts) {
-  for (auto& slot: frameBuffer_) {
+  for (auto& slot : frameBuffer_) {
     if (slot.occupied && slot.pts == desiredPts) {
       return &slot;
     }

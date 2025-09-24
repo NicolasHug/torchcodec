@@ -238,9 +238,6 @@ class SingleStreamDecoder {
     // color-conversion fields. Only one of FilterGraphContext and
     // UniqueSwsContext should be non-null.
     UniqueSwrContext swrContext;
-
-    // Bitstream filter for MP4 to Annex B conversion
-    UniqueAVBSFContext bitstreamFilter;
   };
 
   // --------------------------------------------------------------------------
