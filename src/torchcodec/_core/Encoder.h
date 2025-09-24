@@ -57,7 +57,6 @@ class AudioEncoder {
   bool encodeWasCalled_ = false;
   int64_t lastEncodedAVFramePts_ = 0;
 };
-} // namespace facebook::torchcodec
 
 /* clang-format off */
 //
@@ -121,3 +120,54 @@ class AudioEncoder {
 //
 //
 /* clang-format on */
+
+class VideoEncoder {
+ public:
+  ~VideoEncoder();
+
+  // Rule of Five requires that we define copy and move
+  // constructors and assignment operators.
+  // Both are deleted because we have unique_ptr members
+  VideoEncoder(const VideoEncoder&) = delete;
+  VideoEncoder& operator=(const VideoEncoder&) = delete;
+
+  // Move assignment operator deleted since we have a const member
+  VideoEncoder(VideoEncoder&&) = default;
+  VideoEncoder& operator=(VideoEncoder&&) = delete;
+
+  VideoEncoder(
+      const torch::Tensor& frames,
+      int frameRate,
+      std::string_view fileName,
+      const VideoStreamOptions& videoStreamOptions);
+
+  void encode();
+
+ private:
+  void initializeEncoder(const VideoStreamOptions& videoStreamOptions);
+  UniqueAVFrame convertTensorToAVFrame(
+      const torch::Tensor& frame,
+      int frameIndex);
+  void encodeFrame(AutoAVPacket& autoAVPacket, const UniqueAVFrame& avFrame);
+  void flushBuffers();
+
+  UniqueEncodingAVFormatContext avFormatContext_;
+  UniqueAVCodecContext avCodecContext_;
+  int streamIndex_ = -1;
+  UniqueSwsContext swsContext_;
+
+  const torch::Tensor frames_;
+  int inFrameRate_;
+
+  int inWidth_ = -1;
+  int inHeight_ = -1;
+  AVPixelFormat inPixelFormat_ = AV_PIX_FMT_NONE;
+
+  int outWidth_ = -1;
+  int outHeight_ = -1;
+  AVPixelFormat outPixelFormat_ = AV_PIX_FMT_NONE;
+
+  bool encodeWasCalled_ = false;
+};
+
+} // namespace facebook::torchcodec

@@ -41,6 +41,11 @@ struct VideoStreamOptions {
   torch::Device device = torch::kCPU;
   // Device variant (e.g., "default", "beta", etc.)
   std::string_view deviceVariant = "default";
+
+  // Encoding options
+  std::optional<int> bitRate;
+  std::optional<int> gopSize;
+  std::optional<int> maxBFrames;
 };
 
 struct AudioStreamOptions {
