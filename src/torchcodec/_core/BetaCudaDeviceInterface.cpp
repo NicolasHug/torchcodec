@@ -8,7 +8,7 @@
 #include <mutex>
 #include <vector>
 
-#include "src/torchcodec/_core/CustomNvdecDeviceInterface.h"
+#include "src/torchcodec/_core/BetaCudaDeviceInterface.h"
 
 #include "src/torchcodec/_core/DeviceInterface.h"
 #include "src/torchcodec/_core/FFMPEGCommon.h"
@@ -28,24 +28,24 @@ namespace facebook::torchcodec {
 
 namespace {
 
-// Register the custom NVDEC device interface with 'custom_nvdec' variant
-static bool g_cuda_custom_nvdec = registerDeviceInterface(
-    DeviceInterfaceKey(torch::kCUDA, "custom_nvdec"),
+// Register the BETA CUDA interface with 'beta' variant
+static bool g_cuda_beta = registerDeviceInterface(
+    DeviceInterfaceKey(torch::kCUDA, "beta"),
     [](const torch::Device& device) {
-      return new CustomNvdecDeviceInterface(device);
+      return new BetaCudaDeviceInterface(device);
     });
 
 static int CUDAAPI
 HandleVideoSequence(void* pUserData, CUVIDEOFORMAT* pVideoFormat) {
-  CustomNvdecDeviceInterface* decoder =
-      static_cast<CustomNvdecDeviceInterface*>(pUserData);
+  BetaCudaDeviceInterface* decoder =
+      static_cast<BetaCudaDeviceInterface*>(pUserData);
   return decoder->handleVideoSequence(pVideoFormat);
 }
 
 static int CUDAAPI
 HandlePictureDecode(void* pUserData, CUVIDPICPARAMS* pPicParams) {
-  CustomNvdecDeviceInterface* decoder =
-      static_cast<CustomNvdecDeviceInterface*>(pUserData);
+  BetaCudaDeviceInterface* decoder =
+      static_cast<BetaCudaDeviceInterface*>(pUserData);
   return decoder->handlePictureDecode(pPicParams);
 }
 
@@ -122,11 +122,11 @@ static UniqueCUvideodecoder createDecoder(CUVIDEOFORMAT* video_format) {
 
 } // namespace
 
-CustomNvdecDeviceInterface::CustomNvdecDeviceInterface(
+BetaCudaDeviceInterface::BetaCudaDeviceInterface(
     const torch::Device& device)
     : DeviceInterface(device) {
   TORCH_CHECK(
-      g_cuda_custom_nvdec, "CustomNvdecDeviceInterface was not registered!");
+      g_cuda_beta, "BetaCudaDeviceInterface was not registered!");
   TORCH_CHECK(
       device_.type() == torch::kCUDA, "Unsupported device: ", device_.str());
   
@@ -135,7 +135,7 @@ CustomNvdecDeviceInterface::CustomNvdecDeviceInterface(
   frameBuffer_.resize(4);
 }
 
-CustomNvdecDeviceInterface::~CustomNvdecDeviceInterface() {
+BetaCudaDeviceInterface::~BetaCudaDeviceInterface() {
   // Clean up any remaining frames in the buffer
   {
     std::lock_guard<std::mutex> lock(frameBufferMutex_);
@@ -159,16 +159,16 @@ CustomNvdecDeviceInterface::~CustomNvdecDeviceInterface() {
   parserCreated_ = false;
 }
 
-std::optional<const AVCodec*> CustomNvdecDeviceInterface::findCodec(
+std::optional<const AVCodec*> BetaCudaDeviceInterface::findCodec(
     const AVCodecID& codecId) {
 
-  // For custom NVDEC, we bypass FFmpeg codec selection entirely
+  // We bypass FFmpeg codec selection entirely
   // We'll handle the codec selection in our own NVDEC initialization
   (void)codecId; // Suppress unused parameter warning
   return std::nullopt;
 }
 
-void CustomNvdecDeviceInterface::initializeContext(
+void BetaCudaDeviceInterface::initializeContext(
     AVCodecContext* codecContext) {
   // Don't set hw_device_ctx - we handle decoding directly with NVDEC SDK
   // Just ensure CUDA context exists for PyTorch tensors
@@ -184,7 +184,7 @@ void CustomNvdecDeviceInterface::initializeContext(
     default:
       TORCH_CHECK(
           false,
-          "Unsupported codec for custom NVDEC: ",
+          "Unsupported codec for BETA CUDA interface: ",
           avcodec_get_name(codecContext->codec_id));
   }
 
@@ -201,16 +201,16 @@ void CustomNvdecDeviceInterface::initializeContext(
   createVideoParser();
 }
 
-void CustomNvdecDeviceInterface::setTimeBase(const AVRational& timeBase) {
+void BetaCudaDeviceInterface::setTimeBase(const AVRational& timeBase) {
   timeBase_ = timeBase;
 }
 
-void CustomNvdecDeviceInterface::setFrameRate(const AVRational& frameRate) {
+void BetaCudaDeviceInterface::setFrameRate(const AVRational& frameRate) {
   fallbackFrameRate_ = frameRate;
 }
 
 
-void CustomNvdecDeviceInterface::createVideoParser() {
+void BetaCudaDeviceInterface::createVideoParser() {
   if (parserCreated_) {
     // TODONVDEC - is this needed?
     return;
@@ -241,7 +241,7 @@ void CustomNvdecDeviceInterface::createVideoParser() {
 // the parser encounters the start of the headers, or when "there is a change in
 // the sequence" - which, I assume means a change in any one of CUVIDEOFORMAT
 // fields?
-int CustomNvdecDeviceInterface::handleVideoSequence(
+int BetaCudaDeviceInterface::handleVideoSequence(
     CUVIDEOFORMAT* pVideoFormat) {
   TORCH_CHECK(pVideoFormat != nullptr, "Invalid video format");
 
@@ -261,7 +261,7 @@ int CustomNvdecDeviceInterface::handleVideoSequence(
 }
 
 // Parser triggers this callback when bitstream data for one frame is ready
-int CustomNvdecDeviceInterface::handlePictureDecode(
+int BetaCudaDeviceInterface::handlePictureDecode(
     CUVIDPICPARAMS* pPicParams) {
 
   // Like DALI: if we're flushing, don't process new decode operations
@@ -308,7 +308,7 @@ int CustomNvdecDeviceInterface::handlePictureDecode(
   return 1;
 }
 
-int CustomNvdecDeviceInterface::sendPacket(ReferenceAVPacket& packet) {
+int BetaCudaDeviceInterface::sendPacket(ReferenceAVPacket& packet) {
 
     if (!parserCreated_) {
       return AVERROR(EINVAL);
@@ -340,7 +340,7 @@ int CustomNvdecDeviceInterface::sendPacket(ReferenceAVPacket& packet) {
   return 0;
 }
 
-int CustomNvdecDeviceInterface::receiveFrame(UniqueAVFrame& frame, int64_t desiredPts) {
+int BetaCudaDeviceInterface::receiveFrame(UniqueAVFrame& frame, int64_t desiredPts) {
   
   std::lock_guard<std::mutex> lock(frameBufferMutex_);
   
@@ -386,7 +386,7 @@ int CustomNvdecDeviceInterface::receiveFrame(UniqueAVFrame& frame, int64_t desir
   return 0;
 }
 
-void CustomNvdecDeviceInterface::flush() {
+void BetaCudaDeviceInterface::flush() {
 
   // Set flush flag like DALI to prevent new decode operations
   flush_ = true;
@@ -431,7 +431,7 @@ void CustomNvdecDeviceInterface::flush() {
 
 
 
-UniqueAVFrame CustomNvdecDeviceInterface::convertCudaFrameToAVFrame(
+UniqueAVFrame BetaCudaDeviceInterface::convertCudaFrameToAVFrame(
     CUdeviceptr framePtr,
     unsigned int pitch,
     const CUVIDPARSERDISPINFO& dispInfo,
@@ -478,11 +478,6 @@ UniqueAVFrame CustomNvdecDeviceInterface::convertCudaFrameToAVFrame(
     avFrame->duration = (int64_t)((effectiveFrameRate.den * timeBase.den) / 
                                   (effectiveFrameRate.num * timeBase.num));
   } else {
-    printf("[WARN] Unable to determine frame duration from frame rate or timebase\n");
-    printf("       NVDEC frame rate: %d/%d, fallback frame rate: %d/%d, timebase: %d/%d\n", 
-           videoFormat_.frame_rate.numerator, videoFormat_.frame_rate.denominator,
-           fallbackFrameRate_.num, fallbackFrameRate_.den,
-           timeBase.num, timeBase.den);
     avFrame->duration = 0; // Unknown duration
   }
   
@@ -529,7 +524,7 @@ UniqueAVFrame CustomNvdecDeviceInterface::convertCudaFrameToAVFrame(
   return avFrame;
 }
 
-void CustomNvdecDeviceInterface::convertAVFrameToFrameOutput(
+void BetaCudaDeviceInterface::convertAVFrameToFrameOutput(
     const VideoStreamOptions& videoStreamOptions,
     const AVRational& timeBase,
     UniqueAVFrame& avFrame,
@@ -542,7 +537,7 @@ void CustomNvdecDeviceInterface::convertAVFrameToFrameOutput(
 
   TORCH_CHECK(
       avFrame->format == AV_PIX_FMT_CUDA,
-      "Expected CUDA format frame from custom NVDEC decoder");
+      "Expected CUDA format frame from BETA CUDA interface");
 
   // TODONVDEC: we use the 'default' cuda device interface for color conversion.
   // That's a temporary hack to make things work. *IF* we keep both device
@@ -566,8 +561,8 @@ void CustomNvdecDeviceInterface::convertAVFrameToFrameOutput(
 }
 
 // Helper method to find an empty slot in frame buffer (like DALI's FindEmptySlot)
-CustomNvdecDeviceInterface::FrameBufferSlot* 
-CustomNvdecDeviceInterface::findEmptySlot() {
+BetaCudaDeviceInterface::FrameBufferSlot* 
+BetaCudaDeviceInterface::findEmptySlot() {
   for (auto& slot: frameBuffer_) {
     if (!slot.occupied) {
       return &slot;
@@ -579,8 +574,8 @@ CustomNvdecDeviceInterface::findEmptySlot() {
 }
 
 // Helper method to find frame with exact PTS match
-CustomNvdecDeviceInterface::FrameBufferSlot* 
-CustomNvdecDeviceInterface::findFrameWithExactPts(int64_t desiredPts) {
+BetaCudaDeviceInterface::FrameBufferSlot* 
+BetaCudaDeviceInterface::findFrameWithExactPts(int64_t desiredPts) {
   for (auto& slot: frameBuffer_) {
     if (slot.occupied && slot.pts == desiredPts) {
       return &slot;

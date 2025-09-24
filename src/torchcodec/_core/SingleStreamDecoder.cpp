@@ -12,7 +12,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string_view>
-#include "src/torchcodec/_core/CustomNvdecDeviceInterface.h"
+#include "src/torchcodec/_core/BetaCudaDeviceInterface.h"
 #include "torch/types.h"
 
 namespace facebook::torchcodec {
@@ -453,11 +453,11 @@ void SingleStreamDecoder::addStream(
       // initializing the device interface
       deviceInterface_->initializeContext(codecContext);
       
-      // For custom NVDEC, pass the timeBase and frameRate for duration calculations
-      if (deviceVariant_ == "custom_nvdec") {
-        auto customNvdecInterface = static_cast<CustomNvdecDeviceInterface*>(deviceInterface_.get());
-        customNvdecInterface->setTimeBase(streamInfo.timeBase);
-        customNvdecInterface->setFrameRate(streamInfo.stream->r_frame_rate);
+      // For BETA interface, pass the timeBase and frameRate for duration calculations
+      if (deviceVariant_ == "beta") {
+        auto betaCudaInterface = static_cast<BetaCudaDeviceInterface*>(deviceInterface_.get());
+        betaCudaInterface->setTimeBase(streamInfo.timeBase);
+        betaCudaInterface->setFrameRate(streamInfo.stream->r_frame_rate);
       }
     }
   }
@@ -1146,9 +1146,6 @@ void SingleStreamDecoder::maybeSeekToBeforeDesiredPts() {
     desiredPts = streamInfo.keyFrames[desiredKeyFrameIndex].pts;
   }
 
-  // printf("    DEBUG: Seeking to PTS=%ld (frame wants PTS=%ld)\n", desiredPts, cursor_);
-  fflush(stdout);
-  
   int status = avformat_seek_file(
       formatContext_.get(),
       streamInfo.streamIndex,
@@ -1163,14 +1160,10 @@ void SingleStreamDecoder::maybeSeekToBeforeDesiredPts() {
       ": ",
       getFFMPEGErrorStringFromErrorCode(status));
       
-  // printf("    DEBUG: Seek completed successfully\n");
-  fflush(stdout);
 
   decodeStats_.numFlushes++;
   avcodec_flush_buffers(streamInfo.codecContext.get());
   
-  // Flush device interface to clear custom decoder state (PTS queue, frame buffers)
-  // This is essential for proper seek behavior with custom NVDEC decoder
   if (deviceInterface_) {
     deviceInterface_->flush();
   }
@@ -1223,14 +1216,10 @@ UniqueAVFrame SingleStreamDecoder::decodeAVFrame(
       // Is this the kind of frame we're looking for?
       if (status == 0 && filterFunction(avFrame)) {
         // Yes, this is the frame we'll return; break out of the decoding loop.
-        // printf("SingleStreamDecoder: we've got the frame!\n");
-        // fflush(stdout);
         break;
       } else if (status == 0) {
         // No, but we received a valid frame - just not the kind we're looking
         // for. Skip reading more packets and try to receive more frames.
-        // printf("SingleStreamDecoder: received frame but doesn't match filter, continuing\n");
-        // fflush(stdout);
         continue;
       }
 
@@ -1302,8 +1291,6 @@ UniqueAVFrame SingleStreamDecoder::decodeAVFrame(
       }
 
       // Use custom send/receive API (similar to avcodec_send_packet)
-      // printf("SingleStreamDecoder sending packet to custom decoder\n");
-      // fflush(stdout);
       status = deviceInterface_->sendPacket(*packetToSend);
       TORCH_CHECK(
           status >= 0,

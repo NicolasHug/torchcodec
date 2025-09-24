@@ -98,7 +98,7 @@ function(make_torchcodec_libraries
     )
 
     if(ENABLE_CUDA)
-	    list(APPEND core_sources CudaDeviceInterface.cpp CustomNvdecDeviceInterface.cpp NVDECCache.cpp)
+	    list(APPEND core_sources CudaDeviceInterface.cpp BetaCudaDeviceInterface.cpp NVDECCache.cpp)
     endif()
 
     set(core_library_dependencies

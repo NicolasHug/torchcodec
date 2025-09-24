@@ -20,7 +20,7 @@ namespace facebook::torchcodec {
 // Key for device interface registration with device type + variant support
 struct DeviceInterfaceKey {
   torch::DeviceType deviceType;
-  std::string variant = "default"; // e.g., "default", "custom_nvdec", etc.
+  std::string variant = "default"; // e.g., "default", "beta", etc.
 
   bool operator<(const DeviceInterfaceKey& other) const {
     if (deviceType != other.deviceType) {

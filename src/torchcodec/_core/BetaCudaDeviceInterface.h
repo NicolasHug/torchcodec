@@ -24,13 +24,13 @@
 namespace facebook::torchcodec {
 
 
-// Custom NVDEC device interface that provides direct control over NVDEC
+// BETA CUDA device interface that provides direct control over NVDEC
 // while keeping FFmpeg for demuxing
-class CustomNvdecDeviceInterface : public DeviceInterface {
+class BetaCudaDeviceInterface : public DeviceInterface {
  public:
-  CustomNvdecDeviceInterface(const torch::Device& device);
+  BetaCudaDeviceInterface(const torch::Device& device);
 
-  virtual ~CustomNvdecDeviceInterface();
+  virtual ~BetaCudaDeviceInterface();
 
   std::optional<const AVCodec*> findCodec(const AVCodecID& codecId) override;
 
