@@ -519,7 +519,7 @@ void SingleStreamDecoder::addStream(
   // important to discard/demux correctly in the inner decoding loop.
   for (unsigned int i = 0; i < formatContext_->nb_streams; ++i) {
     if (i != static_cast<unsigned int>(activeStreamIndex_)) {
-      // formatContext_->streams[i]->discard = AVDISCARD_ALL;
+      formatContext_->streams[i]->discard = AVDISCARD_ALL;
     }
   }
 }
