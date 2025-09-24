@@ -272,9 +272,7 @@ void _add_video_stream(
       : std::nullopt;
   auto videoDecoder = unwrapTensorToGetDecoder(decoder);
   videoDecoder->addVideoStream(
-      stream_index.value_or(-1),
-      videoStreamOptions,
-      converted_mappings);
+      stream_index.value_or(-1), videoStreamOptions, converted_mappings);
 }
 
 // Add a new video stream at `stream_index` using the provided options.
