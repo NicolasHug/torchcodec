@@ -612,9 +612,6 @@ void BetaCudaDeviceInterface::convertAVFrameToFrameOutput(
     UniqueAVFrame& avFrame,
     FrameOutput& frameOutput,
     std::optional<torch::Tensor> preAllocatedOutputTensor) {
-  // Store timeBase for duration calculations in convertCudaFrameToAVFrame
-  timeBase_ = timeBase;
-
   TORCH_CHECK(
       avFrame->format == AV_PIX_FMT_CUDA,
       "Expected CUDA format frame from BETA CUDA interface");
@@ -629,15 +626,12 @@ void BetaCudaDeviceInterface::convertAVFrameToFrameOutput(
     defaultCudaInterface_->initializeContext(&dummyCodecContext);
   }
 
-  FrameOutput cudaFrameOutput;
   defaultCudaInterface_->convertAVFrameToFrameOutput(
       videoStreamOptions,
       timeBase,
       avFrame,
-      cudaFrameOutput,
+      frameOutput,
       preAllocatedOutputTensor);
-
-  frameOutput.data = cudaFrameOutput.data.to(device_);
 }
 
 // Helper method to find an empty slot in frame buffer (like DALI's
