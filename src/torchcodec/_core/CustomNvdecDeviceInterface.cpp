@@ -12,6 +12,7 @@
 
 #include "src/torchcodec/_core/DeviceInterface.h"
 #include "src/torchcodec/_core/FFMPEGCommon.h"
+#include "src/torchcodec/_core/NVDECCache.h"
 
 #include "src/torchcodec/_core/nvcuvid_include/cuviddec.h"
 #include "src/torchcodec/_core/nvcuvid_include/nvcuvid.h"
@@ -24,63 +25,31 @@ extern "C" {
 
 namespace facebook::torchcodec {
 
-NVDECCache& NVDECCache::GetCache(int deviceId) {
-  static NVDECCache cache_inst[32]; // Support up to 32 GPUs like PyTorch
-  if (deviceId == -1) {
-    cudaGetDevice(&deviceId);
-  }
-  return cache_inst[deviceId];
+
+namespace {
+
+// Register the custom NVDEC device interface with 'custom_nvdec' variant
+static bool g_cuda_custom_nvdec = registerDeviceInterface(
+    DeviceInterfaceKey(torch::kCUDA, "custom_nvdec"),
+    [](const torch::Device& device) {
+      return new CustomNvdecDeviceInterface(device);
+    });
+
+static int CUDAAPI
+HandleVideoSequence(void* pUserData, CUVIDEOFORMAT* pVideoFormat) {
+  CustomNvdecDeviceInterface* decoder =
+      static_cast<CustomNvdecDeviceInterface*>(pUserData);
+  return decoder->handleVideoSequence(pVideoFormat);
 }
 
-NVDECCacheKey NVDECCache::createKey(CUVIDEOFORMAT* video_format) {
-  unsigned char num_decode_surfaces = video_format->min_num_decode_surfaces;
-
-  if (num_decode_surfaces == 0) {
-    num_decode_surfaces = 20;  // Default fallback
-  }
-  
-  return NVDECCacheKey{
-    video_format->codec,
-    video_format->coded_width,
-    video_format->coded_height,
-    video_format->chroma_format,
-    video_format->bit_depth_luma_minus8,
-    num_decode_surfaces
-  };
+static int CUDAAPI
+HandlePictureDecode(void* pUserData, CUVIDPICPARAMS* pPicParams) {
+  CustomNvdecDeviceInterface* decoder =
+      static_cast<CustomNvdecDeviceInterface*>(pUserData);
+  return decoder->handlePictureDecode(pPicParams);
 }
 
-UniqueCUvideodecoder NVDECCache::getDecoder(const NVDECCacheKey& key) {
-  std::lock_guard<std::mutex> lock(cache_lock_);
-  
-  auto it = cache_.find(key);
-  if (it != cache_.end()) {
-    // Found cached decoder, return it
-    auto decoder = std::move(it->second);
-    cache_.erase(it);
-    return decoder;
-  }
-  
-  return nullptr; // No cached decoder available
-}
-
-bool NVDECCache::returnDecoder(const NVDECCacheKey& key, UniqueCUvideodecoder decoder) {
-  if (!decoder) {
-    return false;
-  }
-  
-  std::lock_guard<std::mutex> lock(cache_lock_);
-  
-  // Check cache size limit
-  if (cache_.size() >= MAX_CACHE_SIZE) {
-    // Cache full, don't store decoder (it will be auto-destroyed)
-    return false;
-  }
-  
-  cache_[key] = std::move(decoder);
-  return true;
-}
-
-UniqueCUvideodecoder NVDECCache::createDecoder(CUVIDEOFORMAT* video_format) {
+static UniqueCUvideodecoder createDecoder(CUVIDEOFORMAT* video_format) {
   auto codec_type = video_format->codec;
   unsigned height = video_format->coded_height;
   unsigned width = video_format->coded_width;
@@ -91,7 +60,7 @@ UniqueCUvideodecoder NVDECCache::createDecoder(CUVIDEOFORMAT* video_format) {
   if (num_decode_surfaces == 0) {
     num_decode_surfaces = 20;
   }
-  
+
   // Check decoder capabilities
   auto caps = CUVIDDECODECAPS{};
   caps.eCodecType = codec_type;
@@ -99,10 +68,10 @@ UniqueCUvideodecoder NVDECCache::createDecoder(CUVIDEOFORMAT* video_format) {
   caps.nBitDepthMinus8 = bit_depth_luma_minus8;
   CUresult caps_result = cuvidGetDecoderCaps(&caps);
   TORCH_CHECK(caps_result == CUDA_SUCCESS, "Failed to get decoder caps: ", caps_result);
-  
-  TORCH_CHECK(caps.bIsSupported, 
+
+  TORCH_CHECK(caps.bIsSupported,
               "Codec configuration not supported on this GPU. "
-              "Codec: ", static_cast<int>(codec_type), 
+              "Codec: ", static_cast<int>(codec_type),
               ", chroma format: ", static_cast<int>(chroma_format),
               ", bit depth: ", bit_depth_luma_minus8 + 8);
 
@@ -151,29 +120,6 @@ UniqueCUvideodecoder NVDECCache::createDecoder(CUVIDEOFORMAT* video_format) {
   return UniqueCUvideodecoder(raw_decoder, CUvideoDecoderDeleter{});
 }
 
-namespace {
-
-// Register the custom NVDEC device interface with 'custom_nvdec' variant
-static bool g_cuda_custom_nvdec = registerDeviceInterface(
-    DeviceInterfaceKey(torch::kCUDA, "custom_nvdec"),
-    [](const torch::Device& device) {
-      return new CustomNvdecDeviceInterface(device);
-    });
-
-static int CUDAAPI
-HandleVideoSequence(void* pUserData, CUVIDEOFORMAT* pVideoFormat) {
-  CustomNvdecDeviceInterface* decoder =
-      static_cast<CustomNvdecDeviceInterface*>(pUserData);
-  return decoder->handleVideoSequence(pVideoFormat);
-}
-
-static int CUDAAPI
-HandlePictureDecode(void* pUserData, CUVIDPICPARAMS* pPicParams) {
-  CustomNvdecDeviceInterface* decoder =
-      static_cast<CustomNvdecDeviceInterface*>(pUserData);
-  return decoder->handlePictureDecode(pPicParams);
-}
-
 } // namespace
 
 CustomNvdecDeviceInterface::CustomNvdecDeviceInterface(
@@ -201,7 +147,7 @@ CustomNvdecDeviceInterface::~CustomNvdecDeviceInterface() {
 
   // Return decoder to cache if we have one
   if (decoder_) {
-    NVDECCache::GetCache(device_.index()).returnDecoder(decoderKey_, std::move(decoder_));
+    NVDECCache::GetCache(device_.index()).returnDecoder(&videoFormat_, std::move(decoder_));
   }
 
   // Clean up video parser
@@ -302,27 +248,16 @@ int CustomNvdecDeviceInterface::handleVideoSequence(
   videoFormat_ = *pVideoFormat;
 
   if (!decoder_) {
-    decoderKey_ = NVDECCache::createKey(pVideoFormat);
-    
-    decoder_ = NVDECCache::GetCache(device_.index()).getDecoder(decoderKey_);
-    
+    decoder_ = NVDECCache::GetCache(device_.index()).getDecoder(pVideoFormat);
+
     if (!decoder_) {
-      decoder_ = NVDECCache::createDecoder(pVideoFormat);
+      decoder_ = createDecoder(pVideoFormat);
     }
     
     TORCH_CHECK(decoder_, "Failed to get or create decoder");
   }
 
-  // Use min_num_decode_surfaces from video format for optimal memory allocation
-  // as recommended by NVDEC docs and implemented in DALI
-  unsigned int numSurfaces = pVideoFormat->min_num_decode_surfaces;
-  if (numSurfaces == 0) {
-    numSurfaces = 20;  // DALI's fallback value
-  }
-
-  // Return the number of decode surfaces to update parser's ulMaxNumDecodeSurfaces
-  // This follows NVDEC docs recommendation and DALI's implementation
-  return numSurfaces;
+  return static_cast<int>(pVideoFormat->min_num_decode_surfaces);
 }
 
 // Parser triggers this callback when bitstream data for one frame is ready

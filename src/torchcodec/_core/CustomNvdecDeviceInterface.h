@@ -9,6 +9,7 @@
 #include "src/torchcodec/_core/DeviceInterface.h"
 #include "src/torchcodec/_core/Cache.h"
 #include "src/torchcodec/_core/FFMPEGCommon.h"
+#include "src/torchcodec/_core/NVDECCache.h"
 
 #include <memory>
 #include <mutex>
@@ -21,59 +22,6 @@
 #include "src/torchcodec/_core/nvcuvid_include/nvcuvid.h"
 
 namespace facebook::torchcodec {
-
-struct CUvideoDecoderDeleter {
-  void operator()(CUvideodecoder decoder) const {
-    if (decoder) {
-      cuvidDestroyDecoder(decoder);
-    }
-  }
-};
-
-using UniqueCUvideodecoder = std::unique_ptr<void, CUvideoDecoderDeleter>;
-
-struct NVDECCacheKey {
-  cudaVideoCodec codec_type;
-  unsigned width;
-  unsigned height;
-  cudaVideoChromaFormat chroma_format;
-  unsigned int bit_depth_luma_minus8;
-  unsigned char num_decode_surfaces;
-  
-  // TODONVDEC P2: we only implement operator< which is enough for std::map, but:
-  // - we should consider using std::unordered_map
-  // - we should consider a more sophisticated and potentially less strict cache key comparison logic
-  bool operator<(const NVDECCacheKey& other) const {
-    return std::tie(codec_type, width, height, chroma_format, bit_depth_luma_minus8, num_decode_surfaces) <
-           std::tie(other.codec_type, other.width, other.height, other.chroma_format, other.bit_depth_luma_minus8, other.num_decode_surfaces);
-  }
-};
-
-class NVDECCache {
- public:
-  static NVDECCache& GetCache(int deviceId = -1);
-
-  // Get decoder from cache - returns nullptr if none available
-  UniqueCUvideodecoder getDecoder(const NVDECCacheKey& key);
-
-  // Return decoder to cache - returns true if added to cache
-  bool returnDecoder(const NVDECCacheKey& key, UniqueCUvideodecoder decoder);
-
-  // Create new decoder with given parameters
-  static UniqueCUvideodecoder createDecoder(CUVIDEOFORMAT* video_format);
-
-  // Helper to create key from video format
-  static NVDECCacheKey createKey(CUVIDEOFORMAT* video_format);
-
- private:
-  NVDECCache() = default;
-  ~NVDECCache() = default;
-
-  std::map<NVDECCacheKey, UniqueCUvideodecoder> cache_;
-  std::mutex cache_lock_;
-  
-  static constexpr int MAX_CACHE_SIZE = 20; // Much smaller, simpler cache
-};
 
 
 // Custom NVDEC device interface that provides direct control over NVDEC
@@ -126,7 +74,6 @@ class CustomNvdecDeviceInterface : public DeviceInterface {
   // NVDEC decoder context and parser
   CUvideoparser videoParser_ = nullptr;
   UniqueCUvideodecoder decoder_;
-  NVDECCacheKey decoderKey_;
 
   // Video format info
   CUVIDEOFORMAT videoFormat_;
