@@ -48,17 +48,13 @@ pfnDecodePictureCallback(void* pUserData, CUVIDPICPARAMS* pPicParams) {
   return decoder->frameReadyForDecoding(pPicParams);
 }
 
-static UniqueCUvideodecoder createDecoder(CUVIDEOFORMAT* video_format) {
-  auto codec_type = video_format->codec;
-  unsigned height = video_format->coded_height;
-  unsigned width = video_format->coded_width;
-  auto num_decode_surfaces = video_format->min_num_decode_surfaces;
-  auto chroma_format = video_format->chroma_format;
-  auto bit_depth_luma_minus8 = video_format->bit_depth_luma_minus8;
-
-  if (num_decode_surfaces == 0) {
-    num_decode_surfaces = 20;
-  }
+static UniqueCUvideodecoder createDecoder(CUVIDEOFORMAT* videoFormat) {
+  auto codec_type = videoFormat->codec;
+  unsigned height = videoFormat->coded_height;
+  unsigned width = videoFormat->coded_width;
+  auto num_decode_surfaces = videoFormat->min_num_decode_surfaces;
+  auto chroma_format = videoFormat->chroma_format;
+  auto bit_depth_luma_minus8 = videoFormat->bit_depth_luma_minus8;
 
   // Check decoder capabilities
   auto caps = CUVIDDECODECAPS{};
@@ -109,7 +105,6 @@ static UniqueCUvideodecoder createDecoder(CUVIDEOFORMAT* video_format) {
       " vs supported:",
       caps.nMaxMBCount);
 
-  // Create new decoder
   CUVIDDECODECREATEINFO decoder_info;
   memset(&decoder_info, 0, sizeof(CUVIDDECODECREATEINFO));
 
@@ -121,19 +116,19 @@ static UniqueCUvideodecoder createDecoder(CUVIDEOFORMAT* video_format) {
   decoder_info.ulMaxHeight = height;
   decoder_info.ulMaxWidth = width;
   decoder_info.ulTargetHeight =
-      video_format->display_area.bottom - video_format->display_area.top;
+      videoFormat->display_area.bottom - videoFormat->display_area.top;
   decoder_info.ulTargetWidth =
-      video_format->display_area.right - video_format->display_area.left;
+      videoFormat->display_area.right - videoFormat->display_area.left;
   decoder_info.ulNumDecodeSurfaces = num_decode_surfaces;
   decoder_info.ulNumOutputSurfaces = 2;
   decoder_info.ulCreationFlags = cudaVideoCreate_PreferCUVID;
   decoder_info.vidLock = nullptr;
 
   auto& area = decoder_info.display_area;
-  area.left = video_format->display_area.left;
-  area.right = video_format->display_area.right;
-  area.top = video_format->display_area.top;
-  area.bottom = video_format->display_area.bottom;
+  area.left = videoFormat->display_area.left;
+  area.right = videoFormat->display_area.right;
+  area.top = videoFormat->display_area.top;
+  area.bottom = videoFormat->display_area.bottom;
 
   CUvideodecoder raw_decoder;
   CUresult result = cuvidCreateDecoder(&raw_decoder, &decoder_info);
@@ -498,6 +493,9 @@ UniqueAVFrame BetaCudaDeviceInterface::convertCudaFrameToAVFrame(
 void BetaCudaDeviceInterface::flush() {
   isFlushing_ = true;
 
+  // TODONVDEC P0: simplify flushing and "eofSent_" logic. We should just have a
+  // "sendEofPacket()" function that does the right thing, instead of setting
+  // CUVID_PKT_ENDOFSTREAM in different places.
   if (!eofSent_) {
     CUVIDSOURCEDATAPACKET cuvidPacket = {};
     cuvidPacket.flags = CUVID_PKT_ENDOFSTREAM;
