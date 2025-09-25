@@ -176,7 +176,6 @@ BetaCudaDeviceInterface::~BetaCudaDeviceInterface() {
 void BetaCudaDeviceInterface::initializeInterface(AVStream* avStream) {
   TORCH_CHECK(avStream != nullptr, "AVStream cannot be null");
   timeBase_ = avStream->time_base;
-  frameRateFallback_ = avStream->r_frame_rate;
 
   const AVCodecParameters* codecpar = avStream->codecpar;
   TORCH_CHECK(codecpar != nullptr, "CodecParameters cannot be null");
@@ -413,7 +412,7 @@ int BetaCudaDeviceInterface::receiveFrame(
     return AVERROR_EXTERNAL;
   }
 
-  avFrame = convertCudaFrameToAVFrame(framePtr, pitch, dispInfo, timeBase_);
+  avFrame = convertCudaFrameToAVFrame(framePtr, pitch, dispInfo);
 
   // Unmap the frame so that the decoder can reuse its corresponding output
   // surface. Whether this is blocking is unclear?
@@ -434,11 +433,76 @@ int BetaCudaDeviceInterface::receiveFrame(
   return AVSUCCESS;
 }
 
+UniqueAVFrame BetaCudaDeviceInterface::convertCudaFrameToAVFrame(
+    CUdeviceptr framePtr,
+    unsigned int pitch,
+    const CUVIDPARSERDISPINFO& dispInfo) {
+  TORCH_CHECK(framePtr != 0, "Invalid CUDA frame pointer");
+
+  // Get frame dimensions from video format display area (not coded dimensions)
+  // This matches DALI's approach and avoids padding issues
+  int width = videoFormat_.display_area.right - videoFormat_.display_area.left;
+  int height = videoFormat_.display_area.bottom - videoFormat_.display_area.top;
+
+  TORCH_CHECK(width > 0 && height > 0, "Invalid frame dimensions");
+  TORCH_CHECK(
+      pitch >= static_cast<unsigned int>(width), "Pitch must be >= width");
+
+  UniqueAVFrame avFrame(av_frame_alloc());
+  TORCH_CHECK(avFrame.get() != nullptr, "Failed to allocate AVFrame");
+
+  avFrame->width = width;
+  avFrame->height = height;
+  avFrame->format = AV_PIX_FMT_CUDA;
+  avFrame->pts = dispInfo.timestamp; // == guessedPts
+
+  unsigned int frameRateNum = videoFormat_.frame_rate.numerator;
+  unsigned int frameRateDen = videoFormat_.frame_rate.denominator;
+  int64_t duration = static_cast<int64_t>((frameRateDen * timeBase_.den)) /
+      (frameRateNum * timeBase_.num);
+  setDuration(avFrame, duration);
+
+  // We need to assign the frame colorspace. This is crucial for proper color
+  // conversion. NVCUVID stores that in the matrix_coefficients field, but
+  // doesn't document the semantics of the values. Claude code generated this,
+  // which seems to work. Reassuringly, the values seem to match the
+  // corresponding indices in the FFmpeg enum for colorspace conversion
+  // (ff_yuv2rgb_coeffs):
+  // https://ffmpeg.org/doxygen/trunk/yuv2rgb_8c_source.html#l00047
+  switch (videoFormat_.video_signal_description.matrix_coefficients) {
+    case 1:
+      avFrame->colorspace = AVCOL_SPC_BT709;
+      break;
+    case 6:
+      avFrame->colorspace = AVCOL_SPC_SMPTE170M; // BT.601
+      break;
+    default:
+      // Default to BT.601
+      avFrame->colorspace = AVCOL_SPC_SMPTE170M;
+      break;
+  }
+
+  avFrame->color_range =
+      videoFormat_.video_signal_description.video_full_range_flag
+      ? AVCOL_RANGE_JPEG
+      : AVCOL_RANGE_MPEG;
+
+  // Below: Ask Claude. I'm not going to even pretend.
+  avFrame->data[0] = reinterpret_cast<uint8_t*>(framePtr);
+  avFrame->data[1] = reinterpret_cast<uint8_t*>(framePtr + (pitch * height));
+  avFrame->data[2] = nullptr;
+  avFrame->data[3] = nullptr;
+  avFrame->linesize[0] = pitch;
+  avFrame->linesize[1] = pitch;
+  avFrame->linesize[2] = 0;
+  avFrame->linesize[3] = 0;
+
+  return avFrame;
+}
+
 void BetaCudaDeviceInterface::flush() {
-  // Set flush flag like DALI to prevent new decode operations
   isFlushing_ = true;
 
-  // Send EOS packet to drain decoder like DALI does
   if (!eofSent_) {
     CUVIDSOURCEDATAPACKET cuvidPacket = {};
     cuvidPacket.flags = CUVID_PKT_ENDOFSTREAM;
@@ -470,104 +534,6 @@ void BetaCudaDeviceInterface::flush() {
 
   // Reset EOF flag so we can decode more (like DALI does)
   eofSent_ = false;
-}
-
-UniqueAVFrame BetaCudaDeviceInterface::convertCudaFrameToAVFrame(
-    CUdeviceptr framePtr,
-    unsigned int pitch,
-    const CUVIDPARSERDISPINFO& dispInfo,
-    const AVRational& timeBase) {
-  TORCH_CHECK(framePtr != 0, "Invalid CUDA frame pointer");
-
-  // Get frame dimensions from video format display area (not coded dimensions)
-  // This matches DALI's approach and avoids padding issues
-  int width = videoFormat_.display_area.right - videoFormat_.display_area.left;
-  int height = videoFormat_.display_area.bottom - videoFormat_.display_area.top;
-
-  TORCH_CHECK(width > 0 && height > 0, "Invalid frame dimensions");
-  TORCH_CHECK(
-      pitch >= static_cast<unsigned int>(width), "Pitch must be >= width");
-
-  // Allocate AVFrame
-  UniqueAVFrame avFrame(av_frame_alloc());
-  TORCH_CHECK(avFrame.get() != nullptr, "Failed to allocate AVFrame");
-
-  // Set frame properties
-  avFrame->width = width;
-  avFrame->height = height;
-  avFrame->format = AV_PIX_FMT_CUDA; // Indicate this is GPU data
-  avFrame->pts =
-      dispInfo.timestamp; // This PTS was set correctly by handlePictureDisplay
-
-  // Calculate frame duration from NVDEC frame rate, fallback frame rate, and
-  // stream timebase
-  AVRational effectiveFrameRate = {0, 0};
-
-  // First try NVDEC frame rate
-  if (videoFormat_.frame_rate.numerator > 0 &&
-      videoFormat_.frame_rate.denominator > 0) {
-    effectiveFrameRate.num = videoFormat_.frame_rate.numerator;
-    effectiveFrameRate.den = videoFormat_.frame_rate.denominator;
-  }
-  // Fallback to FFmpeg frame rate if NVDEC frame rate is unavailable
-  else if (frameRateFallback_.num > 0 && frameRateFallback_.den > 0) {
-    effectiveFrameRate = frameRateFallback_;
-  }
-
-  if (effectiveFrameRate.num > 0 && effectiveFrameRate.den > 0 &&
-      timeBase.num > 0 && timeBase.den > 0) {
-    // Duration in seconds = frame_rate.den / frame_rate.num
-    // Duration in timebase units = (duration_seconds * timeBase.den) /
-    // timeBase.num = (frame_rate.den * timeBase.den) / (frame_rate.num *
-    // timeBase.num)
-    setDuration(
-        avFrame,
-        (int64_t)((effectiveFrameRate.den * timeBase.den) /
-                  (effectiveFrameRate.num * timeBase.num)));
-  } else {
-    setDuration(avFrame, 0); // Unknown duration
-  }
-
-  // Set color space and color range from NVDEC video format (like DALI does)
-  // This is crucial for proper color conversion!
-
-  // Map NVDEC matrix coefficients to FFmpeg color space
-  switch (videoFormat_.video_signal_description.matrix_coefficients) {
-    case 1: // ITU-R BT.709
-      avFrame->colorspace = AVCOL_SPC_BT709;
-      break;
-    case 5: // ITU-R BT.470-2 System B, G (BT.601 PAL)
-    case 6: // ITU-R BT.601-6 NTSC
-      avFrame->colorspace = AVCOL_SPC_SMPTE170M; // BT.601
-      break;
-    default:
-      // Default to BT.601 for unknown coefficients
-      avFrame->colorspace = AVCOL_SPC_SMPTE170M;
-      break;
-  }
-
-  // Set color range from full range flag
-  if (videoFormat_.video_signal_description.video_full_range_flag) {
-    avFrame->color_range = AVCOL_RANGE_JPEG; // Full range (0-255)
-  } else {
-    avFrame->color_range = AVCOL_RANGE_MPEG; // Limited range (16-235)
-  }
-
-  // For NVDEC output in NV12 format, we need to set up the data pointers
-  // The framePtr points to the beginning of the NV12 data
-  avFrame->data[0] = reinterpret_cast<uint8_t*>(framePtr); // Y plane
-  avFrame->data[1] = reinterpret_cast<uint8_t*>(
-      framePtr + (pitch * height)); // UV plane (using pitch, not width)
-  avFrame->data[2] = nullptr;
-  avFrame->data[3] = nullptr;
-
-  // Set line sizes for NV12 format using the actual NVDEC pitch
-  avFrame->linesize[0] = pitch; // Y plane stride (use actual pitch from NVDEC)
-  avFrame->linesize[1] = pitch; // UV plane stride (use actual pitch from NVDEC)
-  avFrame->linesize[2] = 0;
-  avFrame->linesize[3] = 0;
-
-  return avFrame;
 }
 
 void BetaCudaDeviceInterface::convertAVFrameToFrameOutput(

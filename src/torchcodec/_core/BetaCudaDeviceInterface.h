@@ -67,8 +67,7 @@ class BetaCudaDeviceInterface : public DeviceInterface {
   UniqueAVFrame convertCudaFrameToAVFrame(
       CUdeviceptr framePtr,
       unsigned int pitch,
-      const CUVIDPARSERDISPINFO& dispInfo,
-      const AVRational& timeBase);
+      const CUVIDPARSERDISPINFO& dispInfo);
 
   CUvideoparser videoParser_ = nullptr;
   UniqueCUvideodecoder decoder_;
@@ -98,7 +97,6 @@ class BetaCudaDeviceInterface : public DeviceInterface {
   bool isFlushing_ = false;
 
   AVRational timeBase_ = {0, 0};
-  AVRational frameRateFallback_ = {0, 0};
 
   UniqueAVBSFContext bitstreamFilter_;
 
