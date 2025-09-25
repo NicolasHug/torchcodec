@@ -49,94 +49,83 @@ pfnDecodePictureCallback(void* pUserData, CUVIDPICPARAMS* pPicParams) {
 }
 
 static UniqueCUvideodecoder createDecoder(CUVIDEOFORMAT* videoFormat) {
-  auto codec_type = videoFormat->codec;
-  unsigned height = videoFormat->coded_height;
-  unsigned width = videoFormat->coded_width;
-  auto num_decode_surfaces = videoFormat->min_num_decode_surfaces;
-  auto chroma_format = videoFormat->chroma_format;
-  auto bit_depth_luma_minus8 = videoFormat->bit_depth_luma_minus8;
-
-  // Check decoder capabilities
+  // Check decoder capabilities - same checks as DALI
   auto caps = CUVIDDECODECAPS{};
-  caps.eCodecType = codec_type;
-  caps.eChromaFormat = chroma_format;
-  caps.nBitDepthMinus8 = bit_depth_luma_minus8;
-  CUresult caps_result = cuvidGetDecoderCaps(&caps);
-  TORCH_CHECK(
-      caps_result == CUDA_SUCCESS, "Failed to get decoder caps: ", caps_result);
+  caps.eCodecType = videoFormat->codec;
+  caps.eChromaFormat = videoFormat->chroma_format;
+  caps.nBitDepthMinus8 = videoFormat->bit_depth_luma_minus8;
+  CUresult result = cuvidGetDecoderCaps(&caps);
+  TORCH_CHECK(result == CUDA_SUCCESS, "Failed to get decoder caps: ", result);
 
   TORCH_CHECK(
       caps.bIsSupported,
       "Codec configuration not supported on this GPU. "
       "Codec: ",
-      static_cast<int>(codec_type),
+      static_cast<int>(videoFormat->codec),
       ", chroma format: ",
-      static_cast<int>(chroma_format),
+      static_cast<int>(videoFormat->chroma_format),
       ", bit depth: ",
-      bit_depth_luma_minus8 + 8);
+      videoFormat->bit_depth_luma_minus8 + 8);
 
   TORCH_CHECK(
-      width >= caps.nMinWidth && height >= caps.nMinHeight,
+      videoFormat->coded_width >= caps.nMinWidth &&
+          videoFormat->coded_height >= caps.nMinHeight,
       "Video is too small in at least one dimension. Provided: ",
-      width,
+      videoFormat->coded_width,
       "x",
-      height,
+      videoFormat->coded_height,
       " vs supported:",
       caps.nMinWidth,
       "x",
       caps.nMinHeight);
 
   TORCH_CHECK(
-      width <= caps.nMaxWidth && height <= caps.nMaxHeight,
+      videoFormat->coded_width <= caps.nMaxWidth &&
+          videoFormat->coded_height <= caps.nMaxHeight,
       "Video is too large in at least one dimension. Provided: ",
-      width,
+      videoFormat->coded_width,
       "x",
-      height,
+      videoFormat->coded_height,
       " vs supported:",
       caps.nMaxWidth,
       "x",
       caps.nMaxHeight);
 
   TORCH_CHECK(
-      width * height / 256 <= caps.nMaxMBCount,
+      videoFormat->coded_width * videoFormat->coded_height / 256 <=
+          caps.nMaxMBCount,
       "Video is too large (too many macroblocks). "
       "Provided (width * height / 256): ",
-      width * height / 256,
+      videoFormat->coded_width * videoFormat->coded_height / 256,
       " vs supported:",
       caps.nMaxMBCount);
 
-  CUVIDDECODECREATEINFO decoder_info;
-  memset(&decoder_info, 0, sizeof(CUVIDDECODECREATEINFO));
-
-  decoder_info.bitDepthMinus8 = bit_depth_luma_minus8;
-  decoder_info.ChromaFormat = chroma_format;
-  decoder_info.CodecType = codec_type;
-  decoder_info.ulHeight = height;
-  decoder_info.ulWidth = width;
-  decoder_info.ulMaxHeight = height;
-  decoder_info.ulMaxWidth = width;
+  // Decoder creation parameters, taken from DALI
+  CUVIDDECODECREATEINFO decoder_info = {};
+  decoder_info.bitDepthMinus8 = videoFormat->bit_depth_luma_minus8;
+  decoder_info.ChromaFormat = videoFormat->chroma_format;
+  decoder_info.CodecType = videoFormat->codec;
+  decoder_info.ulHeight = videoFormat->coded_height;
+  decoder_info.ulWidth = videoFormat->coded_width;
+  decoder_info.ulMaxHeight = videoFormat->coded_height;
+  decoder_info.ulMaxWidth = videoFormat->coded_width;
   decoder_info.ulTargetHeight =
       videoFormat->display_area.bottom - videoFormat->display_area.top;
   decoder_info.ulTargetWidth =
       videoFormat->display_area.right - videoFormat->display_area.left;
-  decoder_info.ulNumDecodeSurfaces = num_decode_surfaces;
+  decoder_info.ulNumDecodeSurfaces = videoFormat->min_num_decode_surfaces;
   decoder_info.ulNumOutputSurfaces = 2;
-  decoder_info.ulCreationFlags = cudaVideoCreate_PreferCUVID;
-  decoder_info.vidLock = nullptr;
+  decoder_info.display_area.left = videoFormat->display_area.left;
+  decoder_info.display_area.right = videoFormat->display_area.right;
+  decoder_info.display_area.top = videoFormat->display_area.top;
+  decoder_info.display_area.bottom = videoFormat->display_area.bottom;
 
-  auto& area = decoder_info.display_area;
-  area.left = videoFormat->display_area.left;
-  area.right = videoFormat->display_area.right;
-  area.top = videoFormat->display_area.top;
-  area.bottom = videoFormat->display_area.bottom;
-
-  CUvideodecoder raw_decoder;
-  CUresult result = cuvidCreateDecoder(&raw_decoder, &decoder_info);
+  CUvideodecoder rawDecoder;
+  result = cuvidCreateDecoder(&rawDecoder, &decoder_info);
   TORCH_CHECK(
       result == CUDA_SUCCESS, "Failed to create NVDEC decoder: ", result);
 
-  // Wrap in unique_ptr with custom deleter
-  return UniqueCUvideodecoder(raw_decoder, CUvideoDecoderDeleter{});
+  return UniqueCUvideodecoder(rawDecoder, CUvideoDecoderDeleter{});
 }
 
 } // namespace
@@ -249,6 +238,8 @@ unsigned char BetaCudaDeviceInterface::streamPropertyChange(
     decoder_ = NVDECCache::GetCache(device_.index()).getDecoder(videoFormat);
 
     if (!decoder_) {
+      // TODONVDEC P0: consider re-configuring an existing decoder instead of
+      // re-creating one. See docs, see DALI.
       decoder_ = createDecoder(videoFormat);
     }
 
