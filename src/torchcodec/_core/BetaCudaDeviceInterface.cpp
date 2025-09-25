@@ -557,10 +557,10 @@ UniqueAVFrame BetaCudaDeviceInterface::convertCudaFrameToAVFrame(
     // Duration in timebase units = (duration_seconds * timeBase.den) /
     // timeBase.num = (frame_rate.den * timeBase.den) / (frame_rate.num *
     // timeBase.num)
-    avFrame->duration = (int64_t)((effectiveFrameRate.den * timeBase.den) /
-                                  (effectiveFrameRate.num * timeBase.num));
+    setDuration(avFrame, (int64_t)((effectiveFrameRate.den * timeBase.den) /
+                                  (effectiveFrameRate.num * timeBase.num)));
   } else {
-    avFrame->duration = 0; // Unknown duration
+    setDuration(avFrame, 0); // Unknown duration
   }
 
   // Set color space and color range from NVDEC video format (like DALI does)

@@ -164,6 +164,7 @@ std::string getFFMPEGErrorStringFromErrorCode(int errorCode);
 // struct member representing duration has changed across the versions we
 // support.
 int64_t getDuration(const UniqueAVFrame& frame);
+void setDuration(const UniqueAVFrame& frame, int64_t duration);
 
 const int* getSupportedSampleRates(const AVCodec& avCodec);
 const AVSampleFormat* getSupportedOutputSampleFormats(const AVCodec& avCodec);
