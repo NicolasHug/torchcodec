@@ -56,7 +56,7 @@ int64_t getDuration(const UniqueAVFrame& avFrame) {
 #endif
 }
 
-void setDuration(const UniqueAVFrame& avFrame, int64_t duration){
+void setDuration(const UniqueAVFrame& avFrame, int64_t duration) {
 #if LIBAVUTIL_VERSION_MAJOR < 58
   avFrame->pkt_duration = duration;
 #else

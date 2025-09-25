@@ -407,7 +407,7 @@ int BetaCudaDeviceInterface::sendPacket(ReferenceAVPacket& packet) {
 // TODONVDEC P0: cleanup this raw pointer / reference monstruosity.
 ReferenceAVPacket* BetaCudaDeviceInterface::applyBSF(
     ReferenceAVPacket& packet,
-    [[maybe_unused]]  AutoAVPacket& filteredAutoPacket,
+    [[maybe_unused]] AutoAVPacket& filteredAutoPacket,
     ReferenceAVPacket& filteredPacket) {
   if (!bitstreamFilter_) {
     return &packet;
@@ -521,7 +521,8 @@ UniqueAVFrame BetaCudaDeviceInterface::convertCudaFrameToAVFrame(
   int height = videoFormat_.display_area.bottom - videoFormat_.display_area.top;
 
   TORCH_CHECK(width > 0 && height > 0, "Invalid frame dimensions");
-  TORCH_CHECK(pitch >= static_cast<unsigned int>(width), "Pitch must be >= width");
+  TORCH_CHECK(
+      pitch >= static_cast<unsigned int>(width), "Pitch must be >= width");
 
   // Allocate AVFrame
   UniqueAVFrame avFrame(av_frame_alloc());
@@ -555,8 +556,10 @@ UniqueAVFrame BetaCudaDeviceInterface::convertCudaFrameToAVFrame(
     // Duration in timebase units = (duration_seconds * timeBase.den) /
     // timeBase.num = (frame_rate.den * timeBase.den) / (frame_rate.num *
     // timeBase.num)
-    setDuration(avFrame, (int64_t)((effectiveFrameRate.den * timeBase.den) /
-                                  (effectiveFrameRate.num * timeBase.num)));
+    setDuration(
+        avFrame,
+        (int64_t)((effectiveFrameRate.den * timeBase.den) /
+                  (effectiveFrameRate.num * timeBase.num)));
   } else {
     setDuration(avFrame, 0); // Unknown duration
   }
