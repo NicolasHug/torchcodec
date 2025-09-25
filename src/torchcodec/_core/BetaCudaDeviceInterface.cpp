@@ -35,10 +35,10 @@ static bool g_cuda_beta = registerDeviceInterface(
     });
 
 static int CUDAAPI
-pfnSequenceCallback(void* pUserData, CUVIDEOFORMAT* pVideoFormat) {
+pfnSequenceCallback(void* pUserData, CUVIDEOFORMAT* videoFormat) {
   BetaCudaDeviceInterface* decoder =
       static_cast<BetaCudaDeviceInterface*>(pUserData);
-  return decoder->handleVideoSequence(pVideoFormat);
+  return static_cast<int>(decoder->streamPropertyChange(videoFormat));
 }
 
 static int CUDAAPI
@@ -152,21 +152,14 @@ BetaCudaDeviceInterface::BetaCudaDeviceInterface(const torch::Device& device)
   TORCH_CHECK(
       device_.type() == torch::kCUDA, "Unsupported device: ", device_.str());
 
-  // Initialize frame buffer for B-frame reordering
   // TODONVDEC P1: init size should probably be min_num_decode_surfaces from
   // video format
   frameBuffer_.resize(4);
 }
 
 BetaCudaDeviceInterface::~BetaCudaDeviceInterface() {
-  {
-    // Clean up any remaining frames in the buffer
-    std::lock_guard<std::mutex> lock(frameBufferMutex_);
-    for (auto& slot : frameBuffer_) {
-      slot.occupied = false;
-      slot.pts = -1;
-    }
-  }
+  // TODONVDEC P0: we probably need to free the frames that have been decoded by
+  // NVDEC but not yet "mapped" - i.e. those that are still in frameBuffer_?
 
   if (decoder_) {
     NVDECCache::GetCache(device_.index())
@@ -194,10 +187,10 @@ void BetaCudaDeviceInterface::initializeInterface(AVStream* avStream) {
       "Can only do H264 for now");
 
   // Setup bit stream filters (BSF):
-  // https://ffmpeg.org/doxygen/7.0/group__lavc__bsf.html This is only needed
-  // for some formats, like H264 or HEVC.
-  // TODONVDEC P1: For now we apply BSF unconditionally, but it should be
-  // optional  and dependent on codec and container.
+  // https://ffmpeg.org/doxygen/7.0/group__lavc__bsf.html
+  // This is only needed for some formats, like H264 or HEVC.  TODONVDEC P1: For
+  // now we apply BSF unconditionally, but it should be optional  and dependent
+  // on codec and container.
   const AVBitStreamFilter* avBSF = av_bsf_get_by_name("h264_mp4toannexb");
   TORCH_CHECK(
       avBSF != nullptr, "Failed to find h264_mp4toannexb bitstream filter");
@@ -228,7 +221,6 @@ void BetaCudaDeviceInterface::initializeInterface(AVStream* avStream) {
   parserParams.CodecType = cudaVideoCodec_H264;
   parserParams.ulMaxNumDecodeSurfaces = 8;
   parserParams.ulMaxDisplayDelay = 0;
-
   // Callback setup, all are triggered by the parser within a call
   // to cuvidParseVideoData
   parserParams.pUserData = this;
@@ -241,26 +233,38 @@ void BetaCudaDeviceInterface::initializeInterface(AVStream* avStream) {
       result == CUDA_SUCCESS, "Failed to create video parser: ", result);
 }
 
-// This callback is called by the parser within cuvidParseVideoData, either when
-// the parser encounters the start of the headers, or when "there is a change in
-// the sequence" - which, I assume means a change in any one of CUVIDEOFORMAT
-// fields?
-int BetaCudaDeviceInterface::handleVideoSequence(CUVIDEOFORMAT* pVideoFormat) {
-  TORCH_CHECK(pVideoFormat != nullptr, "Invalid video format");
+// This callback is called by the parser within cuvidParseVideoData when there
+// is a change in the stream's properties (like resolution change), as specified
+// by CUVIDEOFORMAT. Particularly (but not just!), this is called at the very
+// start of the stream.
+// TODONVDEC P1: Code below mostly assume this is called only once at the start,
+// we should handle the case of multiple calls. Probably need to flush buffers,
+// etc.
+unsigned char BetaCudaDeviceInterface::streamPropertyChange(
+    CUVIDEOFORMAT* videoFormat) {
+  TORCH_CHECK(videoFormat != nullptr, "Invalid video format");
 
-  videoFormat_ = *pVideoFormat;
+  videoFormat_ = *videoFormat;
+
+  if (videoFormat_.min_num_decode_surfaces == 0) {
+    // Same as DALI's fallback
+    videoFormat_.min_num_decode_surfaces = 20;
+  }
 
   if (!decoder_) {
-    decoder_ = NVDECCache::GetCache(device_.index()).getDecoder(pVideoFormat);
+    decoder_ = NVDECCache::GetCache(device_.index()).getDecoder(videoFormat);
 
     if (!decoder_) {
-      decoder_ = createDecoder(pVideoFormat);
+      decoder_ = createDecoder(videoFormat);
     }
 
     TORCH_CHECK(decoder_, "Failed to get or create decoder");
   }
 
-  return static_cast<int>(pVideoFormat->min_num_decode_surfaces);
+  // DALI also returns min_num_decode_surfaces from this function. This
+  // instructs the parser to reset its ulMaxNumDecodeSurfaces field to this
+  // value.
+  return videoFormat_.min_num_decode_surfaces;
 }
 
 // Parser triggers this callback when bitstream data for one frame is ready

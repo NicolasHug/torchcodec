@@ -9,6 +9,9 @@
 // of a cache for the decoders, is inspired by DALI's implementation which is
 // APACHE 2.0:
 // https://github.com/NVIDIA/DALI/blob/c7539676a24a8e9e99a6e8665e277363c5445259/dali/operators/video/frames_decoder_gpu.cc#L1
+//
+// NVDEC / NVCUVID docs:
+// https://docs.nvidia.com/video-technologies/video-codec-sdk/13.0/nvdec-video-decoder-api-prog-guide/index.html#using-nvidia-video-decoder-nvdecode-api
 
 #pragma once
 
@@ -57,7 +60,7 @@ class BetaCudaDeviceInterface : public DeviceInterface {
       ReferenceAVPacket& filteredPacket) override;
 
   // NVDEC callback functions (must be public for C callbacks)
-  int handleVideoSequence(CUVIDEOFORMAT* pVideoFormat);
+  unsigned char streamPropertyChange(CUVIDEOFORMAT* videoFormat);
   int handlePictureDecode(CUVIDPICPARAMS* pPicParams);
 
  private:
