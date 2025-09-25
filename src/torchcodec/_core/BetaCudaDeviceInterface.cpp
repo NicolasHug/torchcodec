@@ -35,14 +35,14 @@ static bool g_cuda_beta = registerDeviceInterface(
     });
 
 static int CUDAAPI
-HandleVideoSequence(void* pUserData, CUVIDEOFORMAT* pVideoFormat) {
+pfnSequenceCallback(void* pUserData, CUVIDEOFORMAT* pVideoFormat) {
   BetaCudaDeviceInterface* decoder =
       static_cast<BetaCudaDeviceInterface*>(pUserData);
   return decoder->handleVideoSequence(pVideoFormat);
 }
 
 static int CUDAAPI
-HandlePictureDecode(void* pUserData, CUVIDPICPARAMS* pPicParams) {
+pfnDecodePictureCallback(void* pUserData, CUVIDPICPARAMS* pPicParams) {
   BetaCudaDeviceInterface* decoder =
       static_cast<BetaCudaDeviceInterface*>(pUserData);
   return decoder->handlePictureDecode(pPicParams);
@@ -153,14 +153,14 @@ BetaCudaDeviceInterface::BetaCudaDeviceInterface(const torch::Device& device)
       device_.type() == torch::kCUDA, "Unsupported device: ", device_.str());
 
   // Initialize frame buffer for B-frame reordering
-  // TODONVDEC: init size should probably be min_num_decode_surfaces from video
-  // format
+  // TODONVDEC P1: init size should probably be min_num_decode_surfaces from
+  // video format
   frameBuffer_.resize(4);
 }
 
 BetaCudaDeviceInterface::~BetaCudaDeviceInterface() {
-  // Clean up any remaining frames in the buffer
   {
+    // Clean up any remaining frames in the buffer
     std::lock_guard<std::mutex> lock(frameBufferMutex_);
     for (auto& slot : frameBuffer_) {
       slot.occupied = false;
@@ -168,63 +168,19 @@ BetaCudaDeviceInterface::~BetaCudaDeviceInterface() {
     }
   }
 
-  // Return decoder to cache if we have one
   if (decoder_) {
     NVDECCache::GetCache(device_.index())
         .returnDecoder(&videoFormat_, std::move(decoder_));
   }
 
-  // Clean up video parser
   if (videoParser_) {
+    // TODONVDEC P2: consider caching this? Does DALI do that?
     cuvidDestroyVideoParser(videoParser_);
     videoParser_ = nullptr;
   }
-
-  parserCreated_ = false;
 }
 
-std::optional<const AVCodec*> BetaCudaDeviceInterface::findCodec(
-    const AVCodecID& codecId) {
-  // We bypass FFmpeg codec selection entirely
-  // We'll handle the codec selection in our own NVDEC initialization
-  (void)codecId; // Suppress unused parameter warning
-  return std::nullopt;
-}
-
-void BetaCudaDeviceInterface::initializeContext(AVCodecContext* codecContext) {
-  // Don't set hw_device_ctx - we handle decoding directly with NVDEC SDK
-  // Just ensure CUDA context exists for PyTorch tensors
-  torch::Tensor dummyTensor = torch::empty(
-      {1}, torch::TensorOptions().dtype(torch::kUInt8).device(device_));
-
-  // Convert FFmpeg codec ID to NVDEC codec enum
-  cudaVideoCodec nvCodec;
-  switch (codecContext->codec_id) {
-    case AV_CODEC_ID_H264:
-      nvCodec = cudaVideoCodec_H264;
-      break;
-    default:
-      TORCH_CHECK(
-          false,
-          "Unsupported codec for BETA CUDA interface: ",
-          avcodec_get_name(codecContext->codec_id));
-  }
-
-  // TODONVDEC figure out why this is needed and where videoFormat_ is actually
-  // used. Maybe this isn't needed at all since this gets overridden in
-  // handleVideoSequence?
-  memset(&videoFormat_, 0, sizeof(videoFormat_));
-  videoFormat_.codec = nvCodec;
-  videoFormat_.coded_width = 0; // Will be set when we get the first frame
-  videoFormat_.coded_height = 0; // Will be set when we get the first frame
-  videoFormat_.chroma_format = cudaVideoChromaFormat_420;
-  videoFormat_.bit_depth_luma_minus8 = 0;
-  videoFormat_.bit_depth_chroma_minus8 = 0;
-
-  createVideoParser();
-}
-
-void BetaCudaDeviceInterface::initializeWithStream(AVStream* avStream) {
+void BetaCudaDeviceInterface::initializeInterface(AVStream* avStream) {
   TORCH_CHECK(avStream != nullptr, "AVStream cannot be null");
   timeBase_ = avStream->time_base;
   frameRateFallback_ = avStream->r_frame_rate;
@@ -233,11 +189,13 @@ void BetaCudaDeviceInterface::initializeWithStream(AVStream* avStream) {
   TORCH_CHECK(codecpar != nullptr, "CodecParameters cannot be null");
 
   TORCH_CHECK(
+      // TODONVDEC P0 support more
       avStream->codecpar->codec_id == AV_CODEC_ID_H264,
       "Can only do H264 for now");
 
-  // Setup bit stream filters (BSF): https://ffmpeg.org/doxygen/7.0/group__lavc__bsf.html
-  // This is only needed for some formats, like H264 or HEVC.
+  // Setup bit stream filters (BSF):
+  // https://ffmpeg.org/doxygen/7.0/group__lavc__bsf.html This is only needed
+  // for some formats, like H264 or HEVC.
   // TODONVDEC P1: For now we apply BSF unconditionally, but it should be
   // optional  and dependent on codec and container.
   const AVBitStreamFilter* avBSF = av_bsf_get_by_name("h264_mp4toannexb");
@@ -264,34 +222,23 @@ void BetaCudaDeviceInterface::initializeWithStream(AVStream* avStream) {
       retVal == AVSUCCESS,
       "Failed to initialize bitstream filter: ",
       getFFMPEGErrorStringFromErrorCode(retVal));
-}
 
-void BetaCudaDeviceInterface::createVideoParser() {
-  if (parserCreated_) {
-    // TODONVDEC - is this needed?
-    return;
-  }
-
-  // Set up video parser parameters
+  // Create parser. Default values that aren't obvious are taken from DALI.
   CUVIDPARSERPARAMS parserParams = {};
-  parserParams.CodecType = videoFormat_.codec;
-  // Set to dummy value initially, sequence callback will update this
-  // as recommended by NVDEC docs
-  parserParams.ulMaxNumDecodeSurfaces = 1;
-  parserParams.ulClockRate = 1000;
-  parserParams.ulErrorThreshold = 0;
-  parserParams.ulMaxDisplayDelay = 1;
+  parserParams.CodecType = cudaVideoCodec_H264;
+  parserParams.ulMaxNumDecodeSurfaces = 8;
+  parserParams.ulMaxDisplayDelay = 0;
+
+  // Callback setup, all are triggered by the parser within a call
+  // to cuvidParseVideoData
   parserParams.pUserData = this;
-  parserParams.pfnSequenceCallback = HandleVideoSequence;
-  parserParams.pfnDecodePicture = HandlePictureDecode;
-  parserParams.pfnDisplayPicture =
-      nullptr; // Like DALI - we handle display manually
+  parserParams.pfnSequenceCallback = pfnSequenceCallback;
+  parserParams.pfnDecodePicture = pfnDecodePictureCallback;
+  parserParams.pfnDisplayPicture = nullptr;
 
   CUresult result = cuvidCreateVideoParser(&videoParser_, &parserParams);
   TORCH_CHECK(
       result == CUDA_SUCCESS, "Failed to create video parser: ", result);
-
-  parserCreated_ = true;
 }
 
 // This callback is called by the parser within cuvidParseVideoData, either when
@@ -364,10 +311,6 @@ int BetaCudaDeviceInterface::handlePictureDecode(CUVIDPICPARAMS* pPicParams) {
 }
 
 int BetaCudaDeviceInterface::sendPacket(ReferenceAVPacket& packet) {
-  if (!parserCreated_) {
-    return AVERROR(EINVAL);
-  }
-
   CUVIDSOURCEDATAPACKET cudaPacket = {};
 
   if (packet.get() && packet->data && packet->size > 0) {
@@ -465,7 +408,7 @@ void BetaCudaDeviceInterface::flush() {
   isFlushing_ = true;
 
   // Send EOS packet to drain decoder like DALI does
-  if (parserCreated_ && !eofSent_) {
+  if (!eofSent_) {
     CUVIDSOURCEDATAPACKET cudaPacket = {};
     cudaPacket.flags = CUVID_PKT_ENDOFSTREAM;
     CUresult result = cuvidParseVideoData(videoParser_, &cudaPacket);

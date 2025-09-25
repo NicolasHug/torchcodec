@@ -1447,13 +1447,9 @@ class TestVideoDecoder:
 
     @needs_cuda
     def test_beta_cuda_interface_error(self):
-        with pytest.raises(
-            RuntimeError, match="Unsupported codec for BETA CUDA interface: av1"
-        ):
+        with pytest.raises(RuntimeError, match="Can only do H264 for now"):
             VideoDecoder(AV1_VIDEO.path, device="cuda:0:beta")
-        with pytest.raises(
-            RuntimeError, match="Unsupported codec for BETA CUDA interface: hevc"
-        ):
+        with pytest.raises(RuntimeError, match="Can only do H264 for now"):
             VideoDecoder(H265_VIDEO.path, device="cuda:0:beta")
         with pytest.raises(
             ValueError, match="Seek mode must be exact for BETA CUDA interface."

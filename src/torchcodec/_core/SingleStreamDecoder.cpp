@@ -446,13 +446,8 @@ void SingleStreamDecoder::addStream(
   // TODO_CODE_QUALITY same as above.
   if (mediaType == AVMEDIA_TYPE_VIDEO) {
     if (deviceInterface_) {
-      // TODONVDEC P2 Re-design the device interface initialization:
-      // - we should ideally have one single method
-      // - initializeContext used to be about initializing the codecContext
-      // object, but with the new Beta CUDA API this function *also* initializes
-      // the device interface itself.
       deviceInterface_->initializeContext(codecContext);
-      deviceInterface_->initializeWithStream(streamInfo.stream);
+      deviceInterface_->initializeInterface(streamInfo.stream);
     }
   }
 

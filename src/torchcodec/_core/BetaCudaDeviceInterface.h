@@ -31,14 +31,10 @@ namespace facebook::torchcodec {
 
 class BetaCudaDeviceInterface : public DeviceInterface {
  public:
-  BetaCudaDeviceInterface(const torch::Device& device);
-
+  explicit BetaCudaDeviceInterface(const torch::Device& device);
   virtual ~BetaCudaDeviceInterface();
 
-  std::optional<const AVCodec*> findCodec(const AVCodecID& codecId) override;
-
-  void initializeContext(AVCodecContext* codecContext) override;
-  void initializeWithStream(AVStream* stream) override;
+  void initializeInterface(AVStream* stream) override;
 
   void convertAVFrameToFrameOutput(
       const VideoStreamOptions& videoStreamOptions,
@@ -55,25 +51,25 @@ class BetaCudaDeviceInterface : public DeviceInterface {
   int sendPacket(ReferenceAVPacket& packet) override;
   int receiveFrame(UniqueAVFrame& frame, int64_t desiredPts) override;
   void flush() override;
-
-  // Apply bitstream filter if needed, returns pointer to packet to use
   ReferenceAVPacket* applyBSF(
       ReferenceAVPacket& packet,
       AutoAVPacket& filteredAutoPacket,
       ReferenceAVPacket& filteredPacket) override;
-
- public:
-  void createVideoParser();
 
   // NVDEC callback functions (must be public for C callbacks)
   int handleVideoSequence(CUVIDEOFORMAT* pVideoFormat);
   int handlePictureDecode(CUVIDPICPARAMS* pPicParams);
 
  private:
+  UniqueAVFrame convertCudaFrameToAVFrame(
+      CUdeviceptr framePtr,
+      unsigned int pitch,
+      const CUVIDPARSERDISPINFO& dispInfo,
+      const AVRational& timeBase);
+
   CUvideoparser videoParser_ = nullptr;
-  bool parserCreated_ = false;
   UniqueCUvideodecoder decoder_;
-  CUVIDEOFORMAT videoFormat_;
+  CUVIDEOFORMAT videoFormat_ = {};
 
   struct FrameBufferSlot {
     CUVIDPARSERDISPINFO dispInfo;
@@ -84,6 +80,7 @@ class BetaCudaDeviceInterface : public DeviceInterface {
       memset(&dispInfo, 0, sizeof(dispInfo));
     }
   };
+
   std::vector<FrameBufferSlot> frameBuffer_;
   std::mutex frameBufferMutex_;
   FrameBufferSlot* findEmptySlot();
@@ -93,26 +90,19 @@ class BetaCudaDeviceInterface : public DeviceInterface {
 
   bool eofSent_ = false;
 
-  // Flush flag to prevent decode operations during flush (like DALI's isFlushing_)
+  // Flush flag to prevent decode operations during flush (like DALI's
+  // isFlushing_)
   bool isFlushing_ = false;
 
   AVRational timeBase_ = {0, 0};
   AVRational frameRateFallback_ = {0, 0};
 
-  // Bitstream filter for MP4 to Annex B conversion
   UniqueAVBSFContext bitstreamFilter_;
 
   // Default CUDA interface for color conversion.
   // TODONVDEC P2: we shouldn't need to keep a separate instance of the default.
   // See other TODO there about how interfaces should be completely independent.
   std::unique_ptr<DeviceInterface> defaultCudaInterface_;
-
-  // Convert CUDA frame pointer to AVFrame
-  UniqueAVFrame convertCudaFrameToAVFrame(
-      CUdeviceptr framePtr,
-      unsigned int pitch,
-      const CUVIDPARSERDISPINFO& dispInfo,
-      const AVRational& timeBase);
 };
 
 } // namespace facebook::torchcodec

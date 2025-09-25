@@ -45,13 +45,17 @@ class DeviceInterface {
     return device_;
   };
 
-  virtual std::optional<const AVCodec*> findCodec(const AVCodecID& codecId) = 0;
+  virtual std::optional<const AVCodec*> findCodec(
+      [[maybe_unused]] const AVCodecID& codecId) {
+    return std::nullopt;
+  };
 
   // Initialize the hardware device that is specified in `device`. Some builds
   // support CUDA and others only support CPU.
-  virtual void initializeContext(AVCodecContext* codecContext) = 0;
+  virtual void initializeContext(
+      [[maybe_unused]] AVCodecContext* codecContext) {}
 
-  virtual void initializeWithStream([[maybe_unused]] AVStream* stream) {}
+  virtual void initializeInterface([[maybe_unused]] AVStream* stream) {}
 
   virtual void convertAVFrameToFrameOutput(
       const VideoStreamOptions& videoStreamOptions,
