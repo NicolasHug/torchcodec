@@ -68,20 +68,20 @@ class DeviceInterface {
     return false;
   }
 
-  // Moral equivalent to avcodec_send_packet()
+  // Moral equivalent of avcodec_send_packet()
   // Returns AVSUCCESS on success, AVERROR(EAGAIN) if decoder queue full, or
   // other AVERROR on failure
-  virtual int sendPacket(ReferenceAVPacket& avPacket) {
+  virtual int sendPacket([[maybe_unused]]ReferenceAVPacket& avPacket) {
     TORCH_CHECK(
         false,
         "Send/receive packet decoding not implemented for this device interface");
     return AVERROR(ENOSYS);
   }
 
-  // Moral equivalent to avcodec_receive_frame()
+  // Moral equivalent of avcodec_receive_frame()
   // Returns AVSUCCESS on success, AVERROR(EAGAIN) if no frame ready,
   // AVERROR_EOF if end of stream, or other AVERROR on failure
-  virtual int receiveFrame(UniqueAVFrame& avFrame, int64_t desiredPts) {
+  virtual int receiveFrame([[maybe_unused]] UniqueAVFrame& avFrame, [[maybe_unused]] int64_t desiredPts) {
     TORCH_CHECK(
         false,
         "Send/receive packet decoding not implemented for this device interface");
@@ -98,8 +98,8 @@ class DeviceInterface {
   // Default implementation returns the original packet (no filtering)
   virtual ReferenceAVPacket* applyBSF(
       ReferenceAVPacket& packet,
-      AutoAVPacket& filteredAutoPacket,
-      ReferenceAVPacket& filteredPacket) {
+      [[maybe_unused]] AutoAVPacket& filteredAutoPacket,
+      [[maybe_unused]] ReferenceAVPacket& filteredPacket) {
     return &packet; // No filtering by default
   }
 

@@ -15,7 +15,7 @@ else()
         # TODO set warnings as errors on Windows as well.
         # set(TORCHCODEC_WERROR_OPTION "/WX")
     else()
-        # set(TORCHCODEC_WERROR_OPTION "-Werror")
+        set(TORCHCODEC_WERROR_OPTION "-Werror")
     endif()
 endif()
 
@@ -31,8 +31,8 @@ endif()
 if (WIN32)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /W4 ${TORCHCODEC_WERROR_OPTION} ${TORCH_CXX_FLAGS}")
 else()
-    # set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -pedantic ${TORCHCODEC_WERROR_OPTION} ${TORCH_CXX_FLAGS}")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${TORCHCODEC_WERROR_OPTION} ${TORCH_CXX_FLAGS}")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -pedantic ${TORCHCODEC_WERROR_OPTION} ${TORCH_CXX_FLAGS}")
+    # set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${TORCHCODEC_WERROR_OPTION} ${TORCH_CXX_FLAGS}")
 endif()
 
 function(make_torchcodec_sublibrary

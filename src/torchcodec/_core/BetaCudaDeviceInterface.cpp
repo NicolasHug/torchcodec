@@ -378,7 +378,7 @@ int BetaCudaDeviceInterface::sendPacket(ReferenceAVPacket& packet) {
     return AVERROR(EINVAL);
   }
 
-  CUVIDSOURCEDATAPACKET cudaPacket = {0};
+  CUVIDSOURCEDATAPACKET cudaPacket = {};
 
   if (packet.get() && packet->data && packet->size > 0) {
     // Regular packet with data
@@ -407,7 +407,7 @@ int BetaCudaDeviceInterface::sendPacket(ReferenceAVPacket& packet) {
 // TODONVDEC P0: cleanup this raw pointer / reference monstruosity.
 ReferenceAVPacket* BetaCudaDeviceInterface::applyBSF(
     ReferenceAVPacket& packet,
-    AutoAVPacket& filteredAutoPacket,
+    [[maybe_unused]]  AutoAVPacket& filteredAutoPacket,
     ReferenceAVPacket& filteredPacket) {
   if (!bitstreamFilter_) {
     return &packet;
@@ -439,7 +439,6 @@ int BetaCudaDeviceInterface::receiveFrame(
   }
 
   CUVIDPARSERDISPINFO dispInfo = slot->dispInfo;
-  int64_t pts = slot->pts;
 
   slot->occupied = false;
   slot->pts = -1;
@@ -477,7 +476,7 @@ void BetaCudaDeviceInterface::flush() {
 
   // Send EOS packet to drain decoder like DALI does
   if (parserCreated_ && !eofSent_) {
-    CUVIDSOURCEDATAPACKET cudaPacket = {0};
+    CUVIDSOURCEDATAPACKET cudaPacket = {};
     cudaPacket.flags = CUVID_PKT_ENDOFSTREAM;
     CUresult result = cuvidParseVideoData(videoParser_, &cudaPacket);
     if (result == CUDA_SUCCESS) {
@@ -496,7 +495,6 @@ void BetaCudaDeviceInterface::flush() {
     }
   }
 
-  size_t ptsQueueSize = packetsPtsQueue.size();
   while (!packetsPtsQueue.empty()) {
     packetsPtsQueue.pop();
   }
@@ -523,7 +521,7 @@ UniqueAVFrame BetaCudaDeviceInterface::convertCudaFrameToAVFrame(
   int height = videoFormat_.display_area.bottom - videoFormat_.display_area.top;
 
   TORCH_CHECK(width > 0 && height > 0, "Invalid frame dimensions");
-  TORCH_CHECK(pitch >= width, "Pitch must be >= width");
+  TORCH_CHECK(pitch >= static_cast<unsigned int>(width), "Pitch must be >= width");
 
   // Allocate AVFrame
   UniqueAVFrame avFrame(av_frame_alloc());
