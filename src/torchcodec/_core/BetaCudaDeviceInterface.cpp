@@ -45,7 +45,7 @@ static int CUDAAPI
 pfnDecodePictureCallback(void* pUserData, CUVIDPICPARAMS* pPicParams) {
   BetaCudaDeviceInterface* decoder =
       static_cast<BetaCudaDeviceInterface*>(pUserData);
-  return decoder->handlePictureDecode(pPicParams);
+  return decoder->frameReadyForDecoding(pPicParams);
 }
 
 static UniqueCUvideodecoder createDecoder(CUVIDEOFORMAT* video_format) {
@@ -267,8 +267,11 @@ unsigned char BetaCudaDeviceInterface::streamPropertyChange(
   return videoFormat_.min_num_decode_surfaces;
 }
 
-// Parser triggers this callback when bitstream data for one frame is ready
-int BetaCudaDeviceInterface::handlePictureDecode(CUVIDPICPARAMS* pPicParams) {
+// Parser triggers this callback within cuvidParseVideoData when a frame is
+// ready to be decoded, i.e. the parser received all the necessary packets for a
+// given frame. It means we can send that frame to be decoded by the hardware
+// NVDEC decoder by calling cuvidDecodePicture which is non-blocking.
+int BetaCudaDeviceInterface::frameReadyForDecoding(CUVIDPICPARAMS* pPicParams) {
   // Like DALI: if we're flushing, don't process new decode operations
   if (isFlushing_) {
     return 0;
@@ -277,8 +280,8 @@ int BetaCudaDeviceInterface::handlePictureDecode(CUVIDPICPARAMS* pPicParams) {
   TORCH_CHECK(pPicParams != nullptr, "Invalid picture parameters");
   TORCH_CHECK(decoder_, "Decoder not initialized before picture decode");
 
-  CUresult result = cuvidDecodePicture(
-      static_cast<CUvideodecoder>(decoder_.get()), pPicParams);
+  // Send frame to be decoded by NVDEC - non-blocking call.
+  CUresult result = cuvidDecodePicture(decoder_.get(), pPicParams);
 
   if (result != CUDA_SUCCESS) {
     return 0;
