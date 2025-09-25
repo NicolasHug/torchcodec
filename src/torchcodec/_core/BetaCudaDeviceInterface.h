@@ -52,7 +52,7 @@ class BetaCudaDeviceInterface : public DeviceInterface {
   }
 
   int sendPacket(ReferenceAVPacket& packet) override;
-  int receiveFrame(UniqueAVFrame& frame, int64_t desiredPts) override;
+  int receiveFrame(UniqueAVFrame& avFrame, int64_t desiredPts) override;
   void flush() override;
   ReferenceAVPacket* applyBSF(
       ReferenceAVPacket& packet,

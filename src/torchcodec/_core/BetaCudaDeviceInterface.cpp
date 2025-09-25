@@ -365,8 +365,8 @@ int BetaCudaDeviceInterface::frameReadyForDecoding(CUVIDPICPARAMS* pPicParams) {
   FrameBufferSlot* slot = findEmptySlot();
   slot->dispInfo = dispInfo;
   slot->guessedPts = guessedPts;
-
   slot->occupied = true;
+
   return 1;
 }
 
@@ -374,7 +374,7 @@ int BetaCudaDeviceInterface::frameReadyForDecoding(CUVIDPICPARAMS* pPicParams) {
 // frame with the exact desired PTS in our frame buffer. This logic is only
 // valid in exact seek_mode, for now.
 int BetaCudaDeviceInterface::receiveFrame(
-    UniqueAVFrame& frame,
+    UniqueAVFrame& avFrame,
     int64_t desiredPts) {
   // TODONVDEC P2 I don't think this mutex is needed, there shouldn't be
   // multi-threading *within* the same decoder/interface instance.
@@ -387,18 +387,21 @@ int BetaCudaDeviceInterface::receiveFrame(
     return AVERROR(EAGAIN);
   }
 
-  CUVIDPARSERDISPINFO dispInfo = slot->dispInfo;
-
   slot->occupied = false;
   slot->guessedPts = -1;
 
-  CUdeviceptr framePtr = 0;
-  unsigned int pitch = 0;
   CUVIDPROCPARAMS procParams = {};
+  CUVIDPARSERDISPINFO dispInfo = slot->dispInfo;
   procParams.progressive_frame = dispInfo.progressive_frame;
   procParams.top_field_first = dispInfo.top_field_first;
   procParams.unpaired_field = dispInfo.repeat_first_field < 0;
+  CUdeviceptr framePtr = 0;
+  unsigned int pitch = 0;
 
+  // We know the frame we want was sent to the hardware decoder, but now we need
+  // to "map" it to an "output surface" before we can use its data. This is a
+  // blocking calls that waits until the frame is fully decoded and ready to be
+  // used.
   CUresult result = cuvidMapVideoFrame(
       static_cast<CUvideodecoder>(decoder_.get()),
       dispInfo.picture_index,
@@ -410,11 +413,23 @@ int BetaCudaDeviceInterface::receiveFrame(
     return AVERROR_EXTERNAL;
   }
 
-  // Convert the NVDEC frame to AVFrame, passing the correct PTS
-  frame = convertCudaFrameToAVFrame(framePtr, pitch, dispInfo, timeBase_);
+  avFrame = convertCudaFrameToAVFrame(framePtr, pitch, dispInfo, timeBase_);
 
-  // Unmap the frame
+  // Unmap the frame so that the decoder can reuse its corresponding output
+  // surface. Whether this is blocking is unclear?
   cuvidUnmapVideoFrame(static_cast<CUvideodecoder>(decoder_.get()), framePtr);
+  // TODONVDEC P0: Get clarity on this:
+  // We assume that the framePtr is still valid after unmapping. That framePtr
+  // is now part of the avFrame, which we'll return to the caller, and the
+  // caller will immediately use it for color-conversion, at which point a copy
+  // happens. After the copy, it doesn't matter whether framePtr is still valid.
+  // And we'll return to this function (and to cuvidUnmapVideoFrame()) *after*
+  // the copy is made, so there should be no risk of overwriting the data before
+  // the copy.
+  // Buuuut yeah, we need get more clarity on what actually happens, and on
+  // what's needed. IIUC DALI makes the color-conversion copy immediately after
+  // cuvidMapVideoFrame() and *before* cuvidUnmapVideoFrame() with a synchronize
+  // in between. So maybe we should do the same.
 
   return AVSUCCESS;
 }
