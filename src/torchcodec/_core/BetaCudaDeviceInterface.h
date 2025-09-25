@@ -76,10 +76,10 @@ class BetaCudaDeviceInterface : public DeviceInterface {
 
   struct FrameBufferSlot {
     CUVIDPARSERDISPINFO dispInfo;
-    int64_t pts;
+    int64_t guessedPts;
     bool occupied = false;
 
-    FrameBufferSlot() : pts(-1), occupied(false) {
+    FrameBufferSlot() : guessedPts(-1), occupied(false) {
       memset(&dispInfo, 0, sizeof(dispInfo));
     }
   };

@@ -267,80 +267,32 @@ unsigned char BetaCudaDeviceInterface::streamPropertyChange(
   return videoFormat_.min_num_decode_surfaces;
 }
 
-// Parser triggers this callback within cuvidParseVideoData when a frame is
-// ready to be decoded, i.e. the parser received all the necessary packets for a
-// given frame. It means we can send that frame to be decoded by the hardware
-// NVDEC decoder by calling cuvidDecodePicture which is non-blocking.
-int BetaCudaDeviceInterface::frameReadyForDecoding(CUVIDPICPARAMS* pPicParams) {
-  // Like DALI: if we're flushing, don't process new decode operations
-  if (isFlushing_) {
-    return 0;
-  }
-
-  TORCH_CHECK(pPicParams != nullptr, "Invalid picture parameters");
-  TORCH_CHECK(decoder_, "Decoder not initialized before picture decode");
-
-  // Send frame to be decoded by NVDEC - non-blocking call.
-  CUresult result = cuvidDecodePicture(decoder_.get(), pPicParams);
-
-  if (result != CUDA_SUCCESS) {
-    return 0;
-  }
-
-  // Like DALI: manually create display info and handle picture display directly
-  CUVIDPARSERDISPINFO dispInfo = {};
-  dispInfo.picture_index = pPicParams->CurrPicIdx;
-  dispInfo.progressive_frame = !pPicParams->field_pic_flag;
-  dispInfo.top_field_first = pPicParams->bottom_field_flag ^ 1;
-  dispInfo.repeat_first_field = 0;
-
-  // TODONVDEC the pipe may be empty, handle that.
-  TORCH_CHECK(
-      !packetsPtsQueue.empty(), "PTS queue is empty when decoding a frame");
-
-  // Simple PTS assignment: use the PTS directly from the packet queue in FIFO
-  // order Each decoded frame gets the PTS from the corresponding packet in
-  // decode order
-  int64_t framePts = packetsPtsQueue.front();
-  packetsPtsQueue.pop();
-
-  // Set the PTS in the display info
-  dispInfo.timestamp = framePts;
-
-  // Buffer frame for B-frame reordering (like DALI)
-  std::lock_guard<std::mutex> lock(frameBufferMutex_);
-  FrameBufferSlot* slot = findEmptySlot();
-  slot->dispInfo = dispInfo;
-  slot->pts = framePts;
-
-  slot->occupied = true;
-  return 1;
-}
-
+// Moral equivalent of avcodec_send_packet(). Here, we pass the AVPacket down to
+// the NVCUVID parser.
 int BetaCudaDeviceInterface::sendPacket(ReferenceAVPacket& packet) {
-  CUVIDSOURCEDATAPACKET cudaPacket = {};
+  CUVIDSOURCEDATAPACKET cuvidPacket = {};
 
   if (packet.get() && packet->data && packet->size > 0) {
     // Regular packet with data
-    cudaPacket.payload = packet->data;
-    cudaPacket.payload_size = packet->size;
-    cudaPacket.flags = CUVID_PKT_TIMESTAMP;
-    cudaPacket.timestamp = packet->pts;
+    cuvidPacket.payload = packet->data;
+    cuvidPacket.payload_size = packet->size;
+    cuvidPacket.flags = CUVID_PKT_TIMESTAMP;
+    cuvidPacket.timestamp = packet->pts;
 
-    // Like DALI: store PTS in queue to assign to frames as they come out
+    // Like DALI: store packet PTS in queue to later assign to frames as they
+    // come out
     packetsPtsQueue.push(packet->pts);
 
   } else {
     // End of stream packet
-    cudaPacket.flags = CUVID_PKT_ENDOFSTREAM;
+    cuvidPacket.flags = CUVID_PKT_ENDOFSTREAM;
     eofSent_ = true;
   }
 
-  CUresult result = cuvidParseVideoData(videoParser_, &cudaPacket);
+  CUresult result = cuvidParseVideoData(videoParser_, &cuvidPacket);
   if (result != CUDA_SUCCESS) {
     return AVERROR_EXTERNAL;
   }
-
   return AVSUCCESS;
 }
 
@@ -367,21 +319,78 @@ ReferenceAVPacket* BetaCudaDeviceInterface::applyBSF(
   return &filteredPacket;
 }
 
+// Parser triggers this callback within cuvidParseVideoData when a frame is
+// ready to be decoded, i.e. the parser received all the necessary packets for a
+// given frame. It means we can send that frame to be decoded by the hardware
+// NVDEC decoder by calling cuvidDecodePicture which is non-blocking.
+int BetaCudaDeviceInterface::frameReadyForDecoding(CUVIDPICPARAMS* pPicParams) {
+  if (isFlushing_) {
+    return 0;
+  }
+
+  TORCH_CHECK(pPicParams != nullptr, "Invalid picture parameters");
+  TORCH_CHECK(decoder_, "Decoder not initialized before picture decode");
+
+  // Send frame to be decoded by NVDEC - non-blocking call.
+  CUresult result = cuvidDecodePicture(decoder_.get(), pPicParams);
+  if (result != CUDA_SUCCESS) {
+    return 0; // Yes, you're reading that right, 0 mean error.
+  }
+
+  // The frame was sent to be decoded on the NVDEC hardware. Now we store some
+  // relevant info into our frame buffer so that we can retrieve the decoded
+  // frame later when receiveFrame() is called.
+  // Importantly we need to 'guess' the PTS of that frame. The heuristic we use
+  // (like in DALI) is that the frames are ready to be decoded in the same order
+  // as the packets were sent to the parser. So we assign the PTS of the frame
+  // by popping the PTS of the oldest packet in our packetsPtsQueue (note:
+  // oldest doesn't necessarily mean lowest PTS!).
+
+  TORCH_CHECK(
+      // TODONVDEC P0 the queue may be empty, handle that.
+      !packetsPtsQueue.empty(),
+      "PTS queue is empty when decoding a frame");
+  int64_t guessedPts = packetsPtsQueue.front();
+  packetsPtsQueue.pop();
+
+  // Field values taken from DALI
+  CUVIDPARSERDISPINFO dispInfo = {};
+  dispInfo.picture_index = pPicParams->CurrPicIdx;
+  dispInfo.progressive_frame = !pPicParams->field_pic_flag;
+  dispInfo.top_field_first = pPicParams->bottom_field_flag ^ 1;
+  dispInfo.repeat_first_field = 0;
+  dispInfo.timestamp = guessedPts;
+
+  std::lock_guard<std::mutex> lock(frameBufferMutex_);
+  FrameBufferSlot* slot = findEmptySlot();
+  slot->dispInfo = dispInfo;
+  slot->guessedPts = guessedPts;
+
+  slot->occupied = true;
+  return 1;
+}
+
+// Moral equivalent of avcodec_receive_frame(). Here, we look for a decoded
+// frame with the exact desired PTS in our frame buffer. This logic is only
+// valid in exact seek_mode, for now.
 int BetaCudaDeviceInterface::receiveFrame(
     UniqueAVFrame& frame,
     int64_t desiredPts) {
+  // TODONVDEC P2 I don't think this mutex is needed, there shouldn't be
+  // multi-threading *within* the same decoder/interface instance.
   std::lock_guard<std::mutex> lock(frameBufferMutex_);
 
   FrameBufferSlot* slot = findFrameWithExactPts(desiredPts);
   if (slot == nullptr) {
-    // TODONVDEC: Need to handle case where frame buffer is full!!!!!
+    // No frame found, instruct caller to try again later after sending more
+    // packets.
     return AVERROR(EAGAIN);
   }
 
   CUVIDPARSERDISPINFO dispInfo = slot->dispInfo;
 
   slot->occupied = false;
-  slot->pts = -1;
+  slot->guessedPts = -1;
 
   CUdeviceptr framePtr = 0;
   unsigned int pitch = 0;
@@ -416,9 +425,9 @@ void BetaCudaDeviceInterface::flush() {
 
   // Send EOS packet to drain decoder like DALI does
   if (!eofSent_) {
-    CUVIDSOURCEDATAPACKET cudaPacket = {};
-    cudaPacket.flags = CUVID_PKT_ENDOFSTREAM;
-    CUresult result = cuvidParseVideoData(videoParser_, &cudaPacket);
+    CUVIDSOURCEDATAPACKET cuvidPacket = {};
+    cuvidPacket.flags = CUVID_PKT_ENDOFSTREAM;
+    CUresult result = cuvidParseVideoData(videoParser_, &cuvidPacket);
     if (result == CUDA_SUCCESS) {
       eofSent_ = true;
     }
@@ -431,7 +440,7 @@ void BetaCudaDeviceInterface::flush() {
     std::lock_guard<std::mutex> lock(frameBufferMutex_);
     for (auto& slot : frameBuffer_) {
       slot.occupied = false;
-      slot.pts = -1;
+      slot.guessedPts = -1;
     }
   }
 
@@ -593,7 +602,7 @@ BetaCudaDeviceInterface::findEmptySlot() {
 BetaCudaDeviceInterface::FrameBufferSlot*
 BetaCudaDeviceInterface::findFrameWithExactPts(int64_t desiredPts) {
   for (auto& slot : frameBuffer_) {
-    if (slot.occupied && slot.pts == desiredPts) {
+    if (slot.occupied && slot.guessedPts == desiredPts) {
       return &slot;
     }
   }
