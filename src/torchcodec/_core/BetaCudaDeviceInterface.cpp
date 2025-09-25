@@ -512,7 +512,6 @@ void BetaCudaDeviceInterface::flush() {
     }
   }
 
-  // Clear flush flag like DALI does
   isFlushing_ = false;
 
   {
@@ -523,16 +522,9 @@ void BetaCudaDeviceInterface::flush() {
     }
   }
 
-  while (!packetsPtsQueue.empty()) {
-    packetsPtsQueue.pop();
-  }
+  std::queue<int64_t> empty;
+  packetsPtsQueue.swap(empty);
 
-  // Synchronize CUDA stream to ensure all operations complete
-  // TODONVDEC make sure this is syncing the right stream, not necessarily
-  // stream 0
-  cudaStreamSynchronize(0);
-
-  // Reset EOF flag so we can decode more (like DALI does)
   eofSent_ = false;
 }
 
@@ -565,8 +557,7 @@ void BetaCudaDeviceInterface::convertAVFrameToFrameOutput(
       preAllocatedOutputTensor);
 }
 
-// Helper method to find an empty slot in frame buffer (like DALI's
-// FindEmptySlot)
+// TODONVDEC P0: Don't let buffer grow indefinitely.
 BetaCudaDeviceInterface::FrameBufferSlot*
 BetaCudaDeviceInterface::findEmptySlot() {
   for (auto& slot : frameBuffer_) {
@@ -574,12 +565,10 @@ BetaCudaDeviceInterface::findEmptySlot() {
       return &slot;
     }
   }
-  // If no empty slots, expand buffer like DALI does
   frameBuffer_.emplace_back();
   return &frameBuffer_.back();
 }
 
-// Helper method to find frame with exact PTS match
 BetaCudaDeviceInterface::FrameBufferSlot*
 BetaCudaDeviceInterface::findFrameWithExactPts(int64_t desiredPts) {
   for (auto& slot : frameBuffer_) {
