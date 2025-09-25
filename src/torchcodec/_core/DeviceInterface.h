@@ -51,6 +51,8 @@ class DeviceInterface {
   // support CUDA and others only support CPU.
   virtual void initializeContext(AVCodecContext* codecContext) = 0;
 
+  virtual void initializeWithStream([[maybe_unused]] AVStream* stream) {}
+
   virtual void convertAVFrameToFrameOutput(
       const VideoStreamOptions& videoStreamOptions,
       const AVRational& timeBase,

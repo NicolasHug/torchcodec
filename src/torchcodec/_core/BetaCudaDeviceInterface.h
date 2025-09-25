@@ -34,15 +34,7 @@ class BetaCudaDeviceInterface : public DeviceInterface {
   std::optional<const AVCodec*> findCodec(const AVCodecID& codecId) override;
 
   void initializeContext(AVCodecContext* codecContext) override;
-
-  // Post-initialization setup with stream information
-  void postInitialize(const AVStream* stream);
-
-  // Set the timeBase for duration calculations
-  void setTimeBase(const AVRational& timeBase);
-
-  // Set the frame rate for duration calculations
-  void setFrameRate(const AVRational& frameRate);
+  void initializeWithStream(AVStream* stream) override;
 
   void convertAVFrameToFrameOutput(
       const VideoStreamOptions& videoStreamOptions,
@@ -128,9 +120,6 @@ class BetaCudaDeviceInterface : public DeviceInterface {
   FrameBufferSlot* findFrameWithExactPts(int64_t desiredPts);
 
   void createVideoParser();
-
-  // Initialize bitstream filter for H264 MP4 to Annex B conversion
-  void initializeBitstreamFilter(const AVCodecParameters* codecpar);
 
   // Convert CUDA frame pointer to AVFrame
   UniqueAVFrame convertCudaFrameToAVFrame(

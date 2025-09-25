@@ -224,17 +224,16 @@ void BetaCudaDeviceInterface::initializeContext(AVCodecContext* codecContext) {
   createVideoParser();
 }
 
-void BetaCudaDeviceInterface::postInitialize(const AVStream* stream) {
-  TORCH_CHECK(stream != nullptr, "Stream cannot be null");
+void BetaCudaDeviceInterface::initializeWithStream(AVStream* avStream) {
+  TORCH_CHECK(avStream != nullptr, "AVStream cannot be null");
+  timeBase_ = avStream->time_base;
+  fallbackFrameRate_ = avStream->r_frame_rate;
 
-  // Initialize bitstream filter for H264 MP4 to Annex B conversion
-  if (stream->codecpar->codec_id == AV_CODEC_ID_H264) {
-    initializeBitstreamFilter(stream->codecpar);
-  }
-}
+  TORCH_CHECK(
+      avStream->codecpar->codec_id == AV_CODEC_ID_H264,
+      "Can only do H264 for now");
 
-void BetaCudaDeviceInterface::initializeBitstreamFilter(
-    const AVCodecParameters* codecpar) {
+  const AVCodecParameters* codecpar = avStream->codecpar;
   TORCH_CHECK(codecpar != nullptr, "CodecParameters cannot be null");
 
   // Only initialize BSF for H264
@@ -266,14 +265,6 @@ void BetaCudaDeviceInterface::initializeBitstreamFilter(
       retVal == AVSUCCESS,
       "Failed to initialize bitstream filter: ",
       getFFMPEGErrorStringFromErrorCode(retVal));
-}
-
-void BetaCudaDeviceInterface::setTimeBase(const AVRational& timeBase) {
-  timeBase_ = timeBase;
-}
-
-void BetaCudaDeviceInterface::setFrameRate(const AVRational& frameRate) {
-  fallbackFrameRate_ = frameRate;
 }
 
 void BetaCudaDeviceInterface::createVideoParser() {

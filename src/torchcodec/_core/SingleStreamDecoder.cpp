@@ -12,7 +12,6 @@
 #include <sstream>
 #include <stdexcept>
 #include <string_view>
-#include "src/torchcodec/_core/BetaCudaDeviceInterface.h"
 #include "torch/types.h"
 
 namespace facebook::torchcodec {
@@ -447,27 +446,13 @@ void SingleStreamDecoder::addStream(
   // TODO_CODE_QUALITY same as above.
   if (mediaType == AVMEDIA_TYPE_VIDEO) {
     if (deviceInterface_) {
-      // TODONVDEC P2 consider changing the name of this, or re-design the
-      // interface initialization: it's not just about AVCodecContext
-      // initialization anymore, it's more generally about initializing the
-      // device interface
+      // TODONVDEC P2 Re-design the device interface initialization:
+      // - we should ideally have one single method
+      // - initializeContext used to be about initializing the codecContext
+      // object, but with the new Beta CUDA API this function *also* initializes
+      // the device interface itself.
       deviceInterface_->initializeContext(codecContext);
-
-      // For BETA interface, pass the timeBase and frameRate for duration
-      // calculations
-      // TODONVDEC P3 this is ugly, should be more generic and part of some init
-      // logic.
-      if (deviceVariant == "beta") {
-        // TODONVDEC P0: support approximate seek mode
-        TORCH_CHECK(
-            seekMode_ == SeekMode::exact,
-            "Seek mode must be exact for BETA CUDA interface.");
-        auto betaCudaInterface =
-            static_cast<BetaCudaDeviceInterface*>(deviceInterface_.get());
-        betaCudaInterface->setTimeBase(streamInfo.timeBase);
-        betaCudaInterface->setFrameRate(streamInfo.stream->r_frame_rate);
-        betaCudaInterface->postInitialize(streamInfo.stream);
-      }
+      deviceInterface_->initializeWithStream(streamInfo.stream);
     }
   }
 
