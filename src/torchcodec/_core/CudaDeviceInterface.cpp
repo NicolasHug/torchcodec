@@ -13,10 +13,19 @@ extern "C" {
 #include <libavutil/pixdesc.h>
 }
 
+// TODONVDEC P1 Changes were made to this file to accomodate for the BETA CUDA
+// interface (see other TODONVDEC below). That's because the BETA CUDA interface
+// relies on this default CUDA interface to do the color conversion. That's
+// hacky, ugly, and leads to complicated code. We should refactor all this so
+// that an interface doesn't need to know anything about any other interface.
+// Note - this is more than just about the BETA CUDA interface: this default
+// interface already relies on the CPU interface to do software decoding when
+// needed, and that's already leading to similar complications.
+
 namespace facebook::torchcodec {
 namespace {
 
-static bool g_cuda_default =
+static bool g_cuda =
     registerDeviceInterface(torch::kCUDA, [](const torch::Device& device) {
       return new CudaDeviceInterface(device);
     });
@@ -171,7 +180,7 @@ std::unique_ptr<NppStreamContext> getNppStreamContext(
 
 CudaDeviceInterface::CudaDeviceInterface(const torch::Device& device)
     : DeviceInterface(device) {
-  TORCH_CHECK(g_cuda_default, "CudaDeviceInterface was not registered!");
+  TORCH_CHECK(g_cuda, "CudaDeviceInterface was not registered!");
   TORCH_CHECK(
       device_.type() == torch::kCUDA, "Unsupported device: ", device_.str());
 }
@@ -217,8 +226,8 @@ std::unique_ptr<FiltersContext> CudaDeviceInterface::initializeFiltersContext(
   }
 
   if (avFrame->hw_frames_ctx == nullptr) {
-    // TODONVDEC P2 needed for beta interface, should get rid of this or improve
-    // the logic.
+    // TODONVDEC P2 return early for for beta interface where avFrames don't
+    // have a hw_frames_ctx. We should get rid of this or improve the logic.
     return nullptr;
   }
 
@@ -348,8 +357,6 @@ void CudaDeviceInterface::convertAVFrameToFrameOutput(
   // Above we checked that the AVFrame was on GPU, but that's not enough, we
   // also need to check that the AVFrame is in AV_PIX_FMT_NV12 format (8 bits),
   // because this is what the NPP color conversion routines expect.
-  // TODO: we should investigate how to can perform color conversion for
-  // non-8bit videos. This is supported on CPU.
   // TODONVDEC P2 this can be hit from the beta interface, but there's no
   // hw_frames_ctx in this case. We should try to understand how that affects
   // this validation.
@@ -404,7 +411,7 @@ void CudaDeviceInterface::convertAVFrameToFrameOutput(
   if (hwFramesCtx) {
     // TODONVDEC P2 this block won't be hit from the beta interface because
     // there is no hwFramesCtx, but we should still make sure there's no CUDA
-    // stream sync issue.
+    // stream sync issue in the beta interface.
     TORCH_CHECK(
         hwFramesCtx->device_ctx != nullptr,
         "The AVFrame's hw_frames_ctx does not have a device_ctx. ");

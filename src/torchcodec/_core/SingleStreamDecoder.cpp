@@ -1141,6 +1141,11 @@ UniqueAVFrame SingleStreamDecoder::decodeAVFrame(
   int status = AVSUCCESS;
   bool reachedEOF = false;
 
+  // TODONVDEC P2: Instead of defining useCustomInterface and rely on if/else
+  // blocks to dispatch to the interface or to FFmpeg, consider *always*
+  // dispatching to the interface. The default implementation of the interface's
+  // receiveFrame and sendPacket could just be calling avcodec_receive_frame and
+  // avcodec_send_packet. This would make the decoding loop even more generic.
   bool useCustomInterface =
       deviceInterface_ && deviceInterface_->canDecodePacketDirectly();
 
@@ -1222,7 +1227,10 @@ UniqueAVFrame SingleStreamDecoder::decodeAVFrame(
     // We got a valid packet. Send it to the decoder, and we'll receive it in
     // the next iteration.
     if (useCustomInterface) {
-      // TODONVDEC P0: cleanup this raw pointer / reference monstruosity.
+      // TODONVDEC P0:
+      // - cleanup this raw pointer / reference monstruosity.
+      // - don't even expose applyBSF in the interface. This should just be part
+      //   of sendPacket().
       AutoAVPacket filteredAutoPacket;
       ReferenceAVPacket filteredPacket(filteredAutoPacket);
       ReferenceAVPacket* packetToSend = deviceInterface_->applyBSF(

@@ -4,6 +4,12 @@
 // This source code is licensed under the BSD-style license found in the
 // LICENSE file in the root directory of this source tree.
 
+// BETA CUDA device interface that provides direct control over NVDEC
+// while keeping FFmpeg for demuxing. A lot of the logic, particularly the use
+// of a cache for the decoders, is inspired by DALI's implementation which is
+// APACHE 2.0:
+// https://github.com/NVIDIA/DALI/blob/c7539676a24a8e9e99a6e8665e277363c5445259/dali/operators/video/frames_decoder_gpu.cc#L1
+
 #pragma once
 
 #include "src/torchcodec/_core/Cache.h"
@@ -23,8 +29,6 @@
 
 namespace facebook::torchcodec {
 
-// BETA CUDA device interface that provides direct control over NVDEC
-// while keeping FFmpeg for demuxing
 class BetaCudaDeviceInterface : public DeviceInterface {
  public:
   BetaCudaDeviceInterface(const torch::Device& device);
@@ -44,21 +48,13 @@ class BetaCudaDeviceInterface : public DeviceInterface {
       std::optional<torch::Tensor> preAllocatedOutputTensor =
           std::nullopt) override;
 
-  // Extension point overrides for direct packet decoding
   bool canDecodePacketDirectly() const override {
     return true;
   }
 
-  // Returns AVSUCCESS on success, AVERROR(EAGAIN) if decoder queue full, or
-  // other AVERROR on failure
-  int sendPacket(ReferenceAVPacket& packet);
-
-  // Receive decoded frame (non-blocking)
-  // Returns AVSUCCESS on success, AVERROR(EAGAIN) if no frame ready,
-  // AVERROR_EOF if end of stream, or other AVERROR on failure
-  int receiveFrame(UniqueAVFrame& frame, int64_t desiredPts);
-
-  void flush();
+  int sendPacket(ReferenceAVPacket& packet) override;
+  int receiveFrame(UniqueAVFrame& frame, int64_t desiredPts) override;
+  void flush() override;
 
   // Apply bitstream filter if needed, returns pointer to packet to use
   ReferenceAVPacket* applyBSF(
@@ -67,18 +63,17 @@ class BetaCudaDeviceInterface : public DeviceInterface {
       ReferenceAVPacket& filteredPacket) override;
 
  public:
+  void createVideoParser();
+
   // NVDEC callback functions (must be public for C callbacks)
   int handleVideoSequence(CUVIDEOFORMAT* pVideoFormat);
   int handlePictureDecode(CUVIDPICPARAMS* pPicParams);
 
  private:
-  // NVDEC decoder context and parser
   CUvideoparser videoParser_ = nullptr;
-  UniqueCUvideodecoder decoder_;
-
-  // Video format info
-  CUVIDEOFORMAT videoFormat_;
   bool parserCreated_ = false;
+  UniqueCUvideodecoder decoder_;
+  CUVIDEOFORMAT videoFormat_;
 
   struct FrameBufferSlot {
     CUVIDPARSERDISPINFO dispInfo;
@@ -89,37 +84,28 @@ class BetaCudaDeviceInterface : public DeviceInterface {
       memset(&dispInfo, 0, sizeof(dispInfo));
     }
   };
-
-  static constexpr int MAX_DECODE_SURFACES = 32; // NVDEC max
   std::vector<FrameBufferSlot> frameBuffer_;
   std::mutex frameBufferMutex_;
+  FrameBufferSlot* findEmptySlot();
+  FrameBufferSlot* findFrameWithExactPts(int64_t desiredPts);
 
   std::queue<int64_t> packetsPtsQueue;
 
-  // EOF tracking
   bool eofSent_ = false;
 
-  // Flush flag to prevent decode operations during flush (like DALI's flush_)
-  bool flush_ = false;
+  // Flush flag to prevent decode operations during flush (like DALI's isFlushing_)
+  bool isFlushing_ = false;
 
-  // Store timeBase for duration calculations
   AVRational timeBase_ = {0, 0};
-
-  // Store frame rate for duration calculations (fallback when NVDEC frame rate
-  // is unavailable)
-  AVRational fallbackFrameRate_ = {0, 0};
+  AVRational frameRateFallback_ = {0, 0};
 
   // Bitstream filter for MP4 to Annex B conversion
   UniqueAVBSFContext bitstreamFilter_;
 
-  // Default CUDA interface for color conversion (created once and reused)
+  // Default CUDA interface for color conversion.
+  // TODONVDEC P2: we shouldn't need to keep a separate instance of the default.
+  // See other TODO there about how interfaces should be completely independent.
   std::unique_ptr<DeviceInterface> defaultCudaInterface_;
-
-  // Helper methods for frame reordering
-  FrameBufferSlot* findEmptySlot();
-  FrameBufferSlot* findFrameWithExactPts(int64_t desiredPts);
-
-  void createVideoParser();
 
   // Convert CUDA frame pointer to AVFrame
   UniqueAVFrame convertCudaFrameToAVFrame(

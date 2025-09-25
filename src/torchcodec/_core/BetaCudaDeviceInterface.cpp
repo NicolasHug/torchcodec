@@ -227,20 +227,19 @@ void BetaCudaDeviceInterface::initializeContext(AVCodecContext* codecContext) {
 void BetaCudaDeviceInterface::initializeWithStream(AVStream* avStream) {
   TORCH_CHECK(avStream != nullptr, "AVStream cannot be null");
   timeBase_ = avStream->time_base;
-  fallbackFrameRate_ = avStream->r_frame_rate;
+  frameRateFallback_ = avStream->r_frame_rate;
+
+  const AVCodecParameters* codecpar = avStream->codecpar;
+  TORCH_CHECK(codecpar != nullptr, "CodecParameters cannot be null");
 
   TORCH_CHECK(
       avStream->codecpar->codec_id == AV_CODEC_ID_H264,
       "Can only do H264 for now");
 
-  const AVCodecParameters* codecpar = avStream->codecpar;
-  TORCH_CHECK(codecpar != nullptr, "CodecParameters cannot be null");
-
-  // Only initialize BSF for H264
-  if (codecpar->codec_id != AV_CODEC_ID_H264) {
-    return;
-  }
-
+  // Setup bit stream filters (BSF): https://ffmpeg.org/doxygen/7.0/group__lavc__bsf.html
+  // This is only needed for some formats, like H264 or HEVC.
+  // TODONVDEC P1: For now we apply BSF unconditionally, but it should be
+  // optional  and dependent on codec and container.
   const AVBitStreamFilter* avBSF = av_bsf_get_by_name("h264_mp4toannexb");
   TORCH_CHECK(
       avBSF != nullptr, "Failed to find h264_mp4toannexb bitstream filter");
@@ -320,7 +319,7 @@ int BetaCudaDeviceInterface::handleVideoSequence(CUVIDEOFORMAT* pVideoFormat) {
 // Parser triggers this callback when bitstream data for one frame is ready
 int BetaCudaDeviceInterface::handlePictureDecode(CUVIDPICPARAMS* pPicParams) {
   // Like DALI: if we're flushing, don't process new decode operations
-  if (flush_) {
+  if (isFlushing_) {
     return 0;
   }
 
@@ -463,7 +462,7 @@ int BetaCudaDeviceInterface::receiveFrame(
 
 void BetaCudaDeviceInterface::flush() {
   // Set flush flag like DALI to prevent new decode operations
-  flush_ = true;
+  isFlushing_ = true;
 
   // Send EOS packet to drain decoder like DALI does
   if (parserCreated_ && !eofSent_) {
@@ -476,7 +475,7 @@ void BetaCudaDeviceInterface::flush() {
   }
 
   // Clear flush flag like DALI does
-  flush_ = false;
+  isFlushing_ = false;
 
   {
     std::lock_guard<std::mutex> lock(frameBufferMutex_);
@@ -537,8 +536,8 @@ UniqueAVFrame BetaCudaDeviceInterface::convertCudaFrameToAVFrame(
     effectiveFrameRate.den = videoFormat_.frame_rate.denominator;
   }
   // Fallback to FFmpeg frame rate if NVDEC frame rate is unavailable
-  else if (fallbackFrameRate_.num > 0 && fallbackFrameRate_.den > 0) {
-    effectiveFrameRate = fallbackFrameRate_;
+  else if (frameRateFallback_.num > 0 && frameRateFallback_.den > 0) {
+    effectiveFrameRate = frameRateFallback_;
   }
 
   if (effectiveFrameRate.num > 0 && effectiveFrameRate.den > 0 &&

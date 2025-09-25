@@ -32,7 +32,6 @@ if (WIN32)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /W4 ${TORCHCODEC_WERROR_OPTION} ${TORCH_CXX_FLAGS}")
 else()
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -pedantic ${TORCHCODEC_WERROR_OPTION} ${TORCH_CXX_FLAGS}")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${TORCHCODEC_WERROR_OPTION} ${TORCH_CXX_FLAGS}")
 endif()
 
 
@@ -115,7 +114,7 @@ function(make_torchcodec_libraries
 
         # Try to find NVCUVID. Try the normal way first. This should work locally.
         find_library(NVCUVID_LIBRARY NAMES nvcuvid)
-        # If not found, try with version suffix, or hardcoded path. Seem appears
+        # If not found, try with version suffix, or hardcoded path. Appears
         # to be necessary on the CI.
         if(NOT NVCUVID_LIBRARY)
             find_library(NVCUVID_LIBRARY NAMES nvcuvid.1 PATHS /usr/lib64 /usr/lib)
