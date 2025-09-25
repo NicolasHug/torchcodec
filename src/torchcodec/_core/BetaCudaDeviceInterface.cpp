@@ -360,7 +360,6 @@ int BetaCudaDeviceInterface::frameReadyForDecoding(CUVIDPICPARAMS* pPicParams) {
   dispInfo.repeat_first_field = 0;
   dispInfo.timestamp = guessedPts;
 
-  std::lock_guard<std::mutex> lock(frameBufferMutex_);
   FrameBufferSlot* slot = findEmptySlot();
   slot->dispInfo = dispInfo;
   slot->guessedPts = guessedPts;
@@ -375,10 +374,6 @@ int BetaCudaDeviceInterface::frameReadyForDecoding(CUVIDPICPARAMS* pPicParams) {
 int BetaCudaDeviceInterface::receiveFrame(
     UniqueAVFrame& avFrame,
     int64_t desiredPts) {
-  // TODONVDEC P2 I don't think this mutex is needed, there shouldn't be
-  // multi-threading *within* the same decoder/interface instance.
-  std::lock_guard<std::mutex> lock(frameBufferMutex_);
-
   FrameBufferSlot* slot = findFrameWithExactPts(desiredPts);
   if (slot == nullptr) {
     // No frame found, instruct caller to try again later after sending more
@@ -514,12 +509,9 @@ void BetaCudaDeviceInterface::flush() {
 
   isFlushing_ = false;
 
-  {
-    std::lock_guard<std::mutex> lock(frameBufferMutex_);
-    for (auto& slot : frameBuffer_) {
-      slot.occupied = false;
-      slot.guessedPts = -1;
-    }
+  for (auto& slot : frameBuffer_) {
+    slot.occupied = false;
+    slot.guessedPts = -1;
   }
 
   std::queue<int64_t> empty;

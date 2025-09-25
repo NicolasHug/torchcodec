@@ -84,7 +84,6 @@ class BetaCudaDeviceInterface : public DeviceInterface {
   };
 
   std::vector<FrameBufferSlot> frameBuffer_;
-  std::mutex frameBufferMutex_;
   FrameBufferSlot* findEmptySlot();
   FrameBufferSlot* findFrameWithExactPts(int64_t desiredPts);
 
