@@ -28,6 +28,11 @@ namespace facebook::torchcodec {
 
 namespace {
 
+// Global mutex to protect NVDEC operations across all instances
+// This prevents race conditions when multiple BetaCudaDeviceInterface instances
+// (each in their own thread) call NVDEC APIs simultaneously
+static std::mutex g_nvdecMutex;
+
 static bool g_cuda_beta = registerDeviceInterface(
     DeviceInterfaceKey(torch::kCUDA, /*variant=*/"beta"),
     [](const torch::Device& device) {
@@ -52,7 +57,8 @@ pfnDisplayPictureCallback(void* pUserData, CUVIDPARSERDISPINFO* dispInfo) {
   return decoder->frameReadyInDisplayOrder(dispInfo);
 }
 
-static UniqueCUvideodecoder createDecoder(CUVIDEOFORMAT* videoFormat) {
+// Internal helper - assumes g_nvdecMutex is already held and device is set
+static UniqueCUvideodecoder createDecoderInternal(CUVIDEOFORMAT* videoFormat) {
   // Check decoder capabilities - same checks as DALI
   auto caps = CUVIDDECODECAPS{};
   caps.eCodecType = videoFormat->codec;
@@ -163,6 +169,15 @@ static UniqueCUvideodecoder createDecoder(CUVIDEOFORMAT* videoFormat) {
   return UniqueCUvideodecoder(decoder, CUvideoDecoderDeleter{});
 }
 
+// Public wrapper that acquires the mutex
+static UniqueCUvideodecoder createDecoder(CUVIDEOFORMAT* videoFormat) {
+  std::lock_guard<std::mutex> lock(g_nvdecMutex);
+
+  // Note: We can't call cudaSetDevice here since we don't know which device
+  // This should only be called from contexts where device is already set
+  return createDecoderInternal(videoFormat);
+}
+
 cudaVideoCodec validateCodecSupport(AVCodecID codecId) {
   switch (codecId) {
     case AV_CODEC_ID_H264:
@@ -203,6 +218,9 @@ BetaCudaDeviceInterface::BetaCudaDeviceInterface(const torch::Device& device)
   TORCH_CHECK(
       device_.type() == torch::kCUDA, "Unsupported device: ", device_.str());
 
+  // Protect CUDA context initialization from race conditions
+  std::lock_guard<std::mutex> lock(g_nvdecMutex);
+
   // Initialize CUDA context with a dummy tensor
   torch::Tensor dummyTensorForCudaInitialization = torch::empty(
       {1}, torch::TensorOptions().dtype(torch::kUInt8).device(device_));
@@ -218,12 +236,14 @@ BetaCudaDeviceInterface::~BetaCudaDeviceInterface() {
     // What happens to those decode surfaces that haven't yet been mapped is
     // unclear.
     flush();
+
     unmapPreviousFrame();
     NVDECCache::getCache(device_.index())
         .returnDecoder(&videoFormat_, std::move(decoder_));
   }
 
   if (videoParser_) {
+    std::lock_guard<std::mutex> lock(g_nvdecMutex);
     // TODONVDEC P2: consider caching this? Does DALI do that?
     cuvidDestroyVideoParser(videoParser_);
     videoParser_ = nullptr;
@@ -244,21 +264,28 @@ void BetaCudaDeviceInterface::initialize(
 
   initializeBSF(codecPar, avFormatCtx);
 
-  // Create parser. Default values that aren't obvious are taken from DALI.
-  CUVIDPARSERPARAMS parserParams = {};
-  parserParams.CodecType = validateCodecSupport(codecPar->codec_id);
-  parserParams.ulMaxNumDecodeSurfaces = 8;
-  parserParams.ulMaxDisplayDelay = 0;
-  // Callback setup, all are triggered by the parser within a call
-  // to cuvidParseVideoData
-  parserParams.pUserData = this;
-  parserParams.pfnSequenceCallback = pfnSequenceCallback;
-  parserParams.pfnDecodePicture = pfnDecodePictureCallback;
-  parserParams.pfnDisplayPicture = pfnDisplayPictureCallback;
+  {
+    std::lock_guard<std::mutex> lock(g_nvdecMutex);
 
-  CUresult result = cuvidCreateVideoParser(&videoParser_, &parserParams);
-  TORCH_CHECK(
-      result == CUDA_SUCCESS, "Failed to create video parser: ", result);
+    // Ensure we're on the correct CUDA device
+    cudaSetDevice(device_.index());
+
+    // Create parser. Default values that aren't obvious are taken from DALI.
+    CUVIDPARSERPARAMS parserParams = {};
+    parserParams.CodecType = validateCodecSupport(codecPar->codec_id);
+    parserParams.ulMaxNumDecodeSurfaces = 8;
+    parserParams.ulMaxDisplayDelay = 0;
+    // Callback setup, all are triggered by the parser within a call
+    // to cuvidParseVideoData
+    parserParams.pUserData = this;
+    parserParams.pfnSequenceCallback = pfnSequenceCallback;
+    parserParams.pfnDecodePicture = pfnDecodePictureCallback;
+    parserParams.pfnDisplayPicture = pfnDisplayPictureCallback;
+
+    CUresult result = cuvidCreateVideoParser(&videoParser_, &parserParams);
+    TORCH_CHECK(
+        result == CUDA_SUCCESS, "Failed to create video parser: ", result);
+  }
 }
 
 void BetaCudaDeviceInterface::initializeBSF(
@@ -355,7 +382,14 @@ void BetaCudaDeviceInterface::initializeBSF(
 // we should handle the case of multiple calls. Probably need to flush buffers,
 // etc.
 int BetaCudaDeviceInterface::streamPropertyChange(CUVIDEOFORMAT* videoFormat) {
+  // NOTE: This callback is triggered from within sendCuvidPacket(), which already
+  // holds g_nvdecMutex. We don't need to lock again here since the same thread
+  // is calling this callback during cuvidParseVideoData().
+
   TORCH_CHECK(videoFormat != nullptr, "Invalid video format");
+
+  // Ensure we're on the correct CUDA device for this interface
+  cudaSetDevice(device_.index());
 
   videoFormat_ = *videoFormat;
 
@@ -370,7 +404,9 @@ int BetaCudaDeviceInterface::streamPropertyChange(CUVIDEOFORMAT* videoFormat) {
     if (!decoder_) {
       // TODONVDEC P2: consider re-configuring an existing decoder instead of
       // re-creating one. See docs, see DALI.
-      decoder_ = createDecoder(videoFormat);
+      // Use internal version since we're called from within sendCuvidPacket
+      // which already holds g_nvdecMutex
+      decoder_ = createDecoderInternal(videoFormat);
     }
 
     TORCH_CHECK(decoder_, "Failed to get or create decoder");
@@ -410,6 +446,7 @@ int BetaCudaDeviceInterface::sendPacket(ReferenceAVPacket& packet) {
 int BetaCudaDeviceInterface::sendEOFPacket() {
   CUVIDSOURCEDATAPACKET cuvidPacket = {};
   cuvidPacket.flags = CUVID_PKT_ENDOFSTREAM;
+
   eofSent_ = true;
 
   return sendCuvidPacket(cuvidPacket);
@@ -417,6 +454,11 @@ int BetaCudaDeviceInterface::sendEOFPacket() {
 
 int BetaCudaDeviceInterface::sendCuvidPacket(
     CUVIDSOURCEDATAPACKET& cuvidPacket) {
+  std::lock_guard<std::mutex> lock(g_nvdecMutex);
+
+  // Ensure we're on the correct CUDA device
+  cudaSetDevice(device_.index());
+
   CUresult result = cuvidParseVideoData(videoParser_, &cuvidPacket);
   return result == CUDA_SUCCESS ? AVSUCCESS : AVERROR_EXTERNAL;
 }
@@ -452,6 +494,10 @@ ReferenceAVPacket& BetaCudaDeviceInterface::applyBSF(
 // given frame. It means we can send that frame to be decoded by the hardware
 // NVDEC decoder by calling cuvidDecodePicture which is non-blocking.
 int BetaCudaDeviceInterface::frameReadyForDecoding(CUVIDPICPARAMS* picParams) {
+  // NOTE: This callback is triggered from within sendCuvidPacket(), which already
+  // holds decodingMutex_. We don't need to lock again here since the same thread
+  // is calling this callback during cuvidParseVideoData().
+
   TORCH_CHECK(picParams != nullptr, "Invalid picture parameters");
   TORCH_CHECK(decoder_, "Decoder not initialized before picture decode");
   // Send frame to be decoded by NVDEC - non-blocking call.
@@ -463,12 +509,20 @@ int BetaCudaDeviceInterface::frameReadyForDecoding(CUVIDPICPARAMS* picParams) {
 
 int BetaCudaDeviceInterface::frameReadyInDisplayOrder(
     CUVIDPARSERDISPINFO* dispInfo) {
+  // NOTE: This callback is triggered from within sendCuvidPacket(), which already
+  // holds decodingMutex_. We don't need to lock again here since the same thread
+  // is calling this callback during cuvidParseVideoData().
   readyFrames_.push(*dispInfo);
   return 1; // success
 }
 
 // Moral equivalent of avcodec_receive_frame().
 int BetaCudaDeviceInterface::receiveFrame(UniqueAVFrame& avFrame) {
+  std::lock_guard<std::mutex> lock(g_nvdecMutex);
+
+  // Ensure we're on the correct CUDA device
+  cudaSetDevice(device_.index());
+
   if (readyFrames_.empty()) {
     // No frame found, instruct caller to try again later after sending more
     // packets, or to stop if EOF was already sent.
@@ -522,6 +576,8 @@ int BetaCudaDeviceInterface::receiveFrame(UniqueAVFrame& avFrame) {
 }
 
 void BetaCudaDeviceInterface::unmapPreviousFrame() {
+  // NOTE: This function is called from receiveFrame() which already holds decodingMutex_.
+  // No additional locking needed here.
   if (previouslyMappedFrame_ == 0) {
     return;
   }
@@ -610,7 +666,10 @@ void BetaCudaDeviceInterface::flush() {
   // flag on the next non-empty packet. It doesn't matter: neither work :)
   // Sending an EOF packet, however, does work. So we do that. And we re-set the
   // eofSent_ flag to false because that's not a true EOF notification.
+
+  // NOTE: sendEOFPacket() will acquire the mutex, so we call it first
   sendEOFPacket();
+
   eofSent_ = false;
 
   std::queue<CUVIDPARSERDISPINFO> emptyQueue;
