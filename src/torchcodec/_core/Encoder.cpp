@@ -1,4 +1,5 @@
 #include <sstream>
+#include <cstdio>
 
 #include "src/torchcodec/_core/AVIOTensorContext.h"
 #include "src/torchcodec/_core/Encoder.h"
@@ -6,11 +7,59 @@
 
 extern "C" {
 #include <libavutil/pixdesc.h>
+#include <libavutil/hwcontext.h>
 }
 
 namespace facebook::torchcodec {
 
 namespace {
+
+UniqueAVBufferRef createCudaHardwareContext(const torch::Device& device) {
+  if (device.type() != torch::kCUDA) {
+    return nullptr;
+  }
+
+  enum AVHWDeviceType hwDeviceType = av_hwdevice_find_type_by_name("cuda");
+  if (hwDeviceType == AV_HWDEVICE_TYPE_NONE) {
+    TORCH_WARN("CUDA hardware device type not found in FFmpeg");
+    return nullptr;
+  }
+
+  AVBufferRef* hwDeviceCtx = nullptr;
+  std::string deviceString = std::to_string(device.index());
+
+  int ret = av_hwdevice_ctx_create(
+      &hwDeviceCtx, hwDeviceType, deviceString.c_str(), nullptr, 0);
+
+  if (ret < 0) {
+    TORCH_WARN(
+        "Failed to create CUDA hardware device context: ",
+        getFFMPEGErrorStringFromErrorCode(ret));
+    return nullptr;
+  }
+
+  return UniqueAVBufferRef(hwDeviceCtx);
+}
+
+const AVCodec* findNvencCodec(enum AVCodecID codecId) {
+  std::string codecName;
+  switch (codecId) {
+    case AV_CODEC_ID_H264:
+      codecName = "h264_nvenc";
+      break;
+    case AV_CODEC_ID_HEVC:
+      codecName = "hevc_nvenc";
+      break;
+    case AV_CODEC_ID_AV1:
+      codecName = "av1_nvenc";
+      break;
+    default:
+      return nullptr;
+  }
+
+  const AVCodec* codec = avcodec_find_encoder_by_name(codecName.c_str());
+  return codec;
+}
 
 torch::Tensor validateSamples(const torch::Tensor& samples) {
   TORCH_CHECK(
@@ -553,8 +602,9 @@ VideoEncoder::VideoEncoder(
     const torch::Tensor& frames,
     int frameRate,
     std::string_view fileName,
-    const VideoStreamOptions& videoStreamOptions)
-    : frames_(validateFrames(frames)), inFrameRate_(frameRate) {
+    const VideoStreamOptions& videoStreamOptions,
+    const torch::Device& device)
+    : frames_(validateFrames(frames)), inFrameRate_(frameRate), device_(device) {
   setFFmpegLogLevel();
 
   // Allocate output format context
@@ -578,13 +628,34 @@ VideoEncoder::VideoEncoder(
       fileName,
       ", make sure it's a valid path? ",
       getFFMPEGErrorStringFromErrorCode(status));
+
+  // Create CUDA hardware context if using CUDA device
+  if (device_.type() == torch::kCUDA) {
+    cudaHwDeviceCtx_ = createCudaHardwareContext(device_);
+  }
+
   initializeEncoder(videoStreamOptions);
 }
 
 void VideoEncoder::initializeEncoder(
     const VideoStreamOptions& videoStreamOptions) {
-  const AVCodec* avCodec =
-      avcodec_find_encoder(avFormatContext_->oformat->video_codec);
+  // Try to use NVENC codec if on CUDA device and CUDA context is available
+  const AVCodec* avCodec = nullptr;
+  if (device_.type() == torch::kCUDA && cudaHwDeviceCtx_) {
+    avCodec = findNvencCodec(avFormatContext_->oformat->video_codec);
+    if (avCodec != nullptr) {
+      printf("Using NVENC encoder: %s\n", avCodec->name);
+    }
+  }
+
+  // Fall back to default codec if NVENC is not available
+  if (avCodec == nullptr) {
+    avCodec = avcodec_find_encoder(avFormatContext_->oformat->video_codec);
+    if (avCodec != nullptr && device_.type() == torch::kCUDA) {
+      printf("NVENC not available, falling back to software encoder: %s\n", avCodec->name);
+    }
+  }
+
   TORCH_CHECK(avCodec != nullptr, "Video codec not found");
 
   AVCodecContext* avCodecContext = avcodec_alloc_context3(avCodec);
@@ -611,6 +682,19 @@ void VideoEncoder::initializeEncoder(
       0, // No alpha channel
       0 // Discard conversion loss information
   );
+
+  // Special handling for NVENC codecs
+  if (strstr(avCodec->name, "nvenc") && outPixelFormat_ == AV_PIX_FMT_GBRP) {
+    // NVENC typically prefers NV12 over GBRP
+    const enum AVPixelFormat* supportedFormats = getSupportedPixelFormats(*avCodec);
+    for (int i = 0; supportedFormats[i] != AV_PIX_FMT_NONE; i++) {
+      if (supportedFormats[i] == AV_PIX_FMT_NV12) {
+        outPixelFormat_ = AV_PIX_FMT_NV12;
+        break;
+      }
+    }
+  }
+
   TORCH_CHECK(outPixelFormat_ != -1, "Failed to find best pix fmt")
 
   // Configure codec parameters
@@ -627,6 +711,11 @@ void VideoEncoder::initializeEncoder(
     avCodecContext_->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
   }
 
+  // Register CUDA hardware device context for NVENC encoding
+  if (cudaHwDeviceCtx_) {
+    avCodecContext->hw_device_ctx = av_buffer_ref(cudaHwDeviceCtx_.get());
+  }
+
   // Apply videoStreamOptions
   AVDictionary* options = nullptr;
   if (videoStreamOptions.crf.has_value()) {
@@ -636,8 +725,38 @@ void VideoEncoder::initializeEncoder(
         std::to_string(videoStreamOptions.crf.value()).c_str(),
         0);
   }
+
+  // For NVENC, we might need to set some specific options
+  if (strstr(avCodec->name, "nvenc")) {
+    // Try setting a preset that NVENC definitely supports
+    av_dict_set(&options, "preset", "fast", 0);
+    // Make sure we're using a supported pixel format for NVENC
+    if (avCodecContext->pix_fmt == AV_PIX_FMT_GBRP) {
+      avCodecContext->pix_fmt = AV_PIX_FMT_NV12;
+    }
+  }
+
   int status = avcodec_open2(avCodecContext_.get(), avCodec, &options);
   av_dict_free(&options);
+
+  // Error loudly if NVENC fails when using CUDA device
+  if (status != AVSUCCESS && device_.type() == torch::kCUDA && cudaHwDeviceCtx_) {
+    std::string errorMsg = "NVENC encoding failed on CUDA device. ";
+    errorMsg += "Error: " + getFFMPEGErrorStringFromErrorCode(status) + ". ";
+
+    if (status == AVERROR(EINVAL)) {
+      errorMsg += "This could mean: ";
+      errorMsg += "(1) GPU doesn't support NVENC (A100/H100 don't have NVENC), ";
+      errorMsg += "(2) Frame dimensions too small (NVENC requires >= 128x128), ";
+      errorMsg += "(3) Unsupported pixel format, ";
+      errorMsg += "(4) Driver issues. ";
+    } else if (status == AVERROR(ENOSYS)) {
+      errorMsg += "NVENC functionality not available. ";
+      errorMsg += "Check that NVIDIA drivers are installed and NVENC is supported on this GPU.";
+    }
+
+    TORCH_CHECK(false, errorMsg);
+  }
 
   TORCH_CHECK(
       status == AVSUCCESS,

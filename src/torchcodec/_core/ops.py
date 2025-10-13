@@ -260,6 +260,7 @@ def encode_video_to_file_abstract(
     frame_rate: int,
     filename: str,
     crf: Optional[int] = None,
+    device: str = "cpu",
 ) -> None:
     return
 

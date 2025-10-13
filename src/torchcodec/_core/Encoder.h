@@ -139,7 +139,8 @@ class VideoEncoder {
       const torch::Tensor& frames,
       int frameRate,
       std::string_view fileName,
-      const VideoStreamOptions& videoStreamOptions);
+      const VideoStreamOptions& videoStreamOptions,
+      const torch::Device& device = torch::kCPU);
 
   void encode();
 
@@ -156,8 +157,12 @@ class VideoEncoder {
   AVStream* avStream_;
   UniqueSwsContext swsContext_;
 
+  // CUDA hardware context for NVENC encoding
+  UniqueAVBufferRef cudaHwDeviceCtx_;
+
   const torch::Tensor frames_;
   int inFrameRate_;
+  const torch::Device device_;
 
   int inWidth_ = -1;
   int inHeight_ = -1;
