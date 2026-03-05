@@ -45,8 +45,7 @@ STABLE_TORCH_LIBRARY(torchcodec_ns, m) {
       "create_from_tensor(Tensor video_tensor, str? seek_mode=None, int? stream_index=None, int? num_threads=None, str? dimension_order=None, str? device=None, str? device_variant=None, Tensor? custom_frame_mappings_pts=None, Tensor? custom_frame_mappings_duration=None, Tensor? custom_frame_mappings_keyframe_indices=None, str? color_conversion_library=None) -> Tensor");
   m.def(
       "_create_from_file_like(int file_like_context, str? seek_mode=None, int? stream_index=None, int? num_threads=None, str? dimension_order=None, str? device=None, str? device_variant=None, Tensor? custom_frame_mappings_pts=None, Tensor? custom_frame_mappings_duration=None, Tensor? custom_frame_mappings_keyframe_indices=None, str? color_conversion_library=None) -> Tensor");
-  m.def(
-      "set_video_transforms(Tensor(a!) decoder, str transform_specs) -> ()");
+  m.def("set_video_transforms(Tensor(a!) decoder, str transform_specs) -> ()");
   m.def(
       "add_audio_stream(Tensor(a!) decoder, *, int? stream_index=None, int? sample_rate=None, int? num_channels=None) -> ()");
   m.def("seek_to_pts(Tensor(a!) decoder, float seconds) -> ()");
@@ -400,8 +399,7 @@ std::optional<SingleStreamDecoder::FrameMappings> buildFrameMappings(
         custom_frame_mappings_keyframe_indices) {
   bool hasPts = custom_frame_mappings_pts.has_value();
   bool hasDuration = custom_frame_mappings_duration.has_value();
-  bool hasKeyframeIndices =
-      custom_frame_mappings_keyframe_indices.has_value();
+  bool hasKeyframeIndices = custom_frame_mappings_keyframe_indices.has_value();
   STD_TORCH_CHECK(
       (hasPts == hasDuration) && (hasDuration == hasKeyframeIndices),
       "custom_frame_mappings_pts, custom_frame_mappings_duration, and "
@@ -447,7 +445,10 @@ torch::stable::Tensor create_from_file(
   }
 
   auto videoStreamOptions = buildVideoStreamOptions(
-      num_threads, dimension_order, device, device_variant,
+      num_threads,
+      dimension_order,
+      device,
+      device_variant,
       color_conversion_library);
 
   auto mappings = buildFrameMappings(
@@ -500,7 +501,10 @@ torch::stable::Tensor create_from_tensor(
       std::make_unique<AVIOFromTensorContext>(video_tensor);
 
   auto videoStreamOptions = buildVideoStreamOptions(
-      num_threads, dimension_order, device, device_variant,
+      num_threads,
+      dimension_order,
+      device,
+      device_variant,
       color_conversion_library);
 
   auto mappings = buildFrameMappings(
@@ -550,7 +554,10 @@ torch::stable::Tensor _create_from_file_like(
   }
 
   auto videoStreamOptions = buildVideoStreamOptions(
-      num_threads, dimension_order, device, device_variant,
+      num_threads,
+      dimension_order,
+      device,
+      device_variant,
       color_conversion_library);
 
   auto mappings = buildFrameMappings(

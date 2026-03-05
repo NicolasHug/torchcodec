@@ -616,8 +616,7 @@ void SingleStreamDecoder::addVideoStream(
       videoStreamOptions, transforms_, resizedOutputDims_);
 }
 
-void SingleStreamDecoder::setTransforms(
-    std::vector<Transform*>& transforms) {
+void SingleStreamDecoder::setTransforms(std::vector<Transform*>& transforms) {
   validateActiveStream(AVMEDIA_TYPE_VIDEO);
 
   const auto& videoStreamOptions =
@@ -630,8 +629,7 @@ void SingleStreamDecoder::setTransforms(
   // Compute the current input dims for user transforms. If rotation was
   // applied during addVideoStream, resizedOutputDims_ reflects the
   // post-rotation dims. Otherwise, use preRotationDims_.
-  FrameDims currInputDims =
-      resizedOutputDims_.value_or(preRotationDims_);
+  FrameDims currInputDims = resizedOutputDims_.value_or(preRotationDims_);
 
   // Validate and add user transforms
   for (auto& transform : transforms) {

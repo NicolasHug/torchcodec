@@ -62,7 +62,9 @@ class TestVideoDecoderOps:
     @pytest.mark.parametrize("device", all_supported_devices())
     def test_seek_and_next(self, device):
         device, device_variant = unsplit_device_str(device)
-        decoder = create_from_file(str(NASA_VIDEO.path), device=device, device_variant=device_variant)
+        decoder = create_from_file(
+            str(NASA_VIDEO.path), device=device, device_variant=device_variant
+        )
         frame0, _, _ = get_next_frame(decoder)
         reference_frame0 = NASA_VIDEO.get_frame_data_by_index(0)
         assert_frames_equal(frame0, reference_frame0.to(device))
@@ -79,7 +81,9 @@ class TestVideoDecoderOps:
     @pytest.mark.parametrize("device", all_supported_devices())
     def test_seek_to_negative_pts(self, device):
         device, device_variant = unsplit_device_str(device)
-        decoder = create_from_file(str(NASA_VIDEO.path), device=device, device_variant=device_variant)
+        decoder = create_from_file(
+            str(NASA_VIDEO.path), device=device, device_variant=device_variant
+        )
         frame0, _, _ = get_next_frame(decoder)
         reference_frame0 = NASA_VIDEO.get_frame_data_by_index(0)
         assert_frames_equal(frame0, reference_frame0.to(device))
@@ -91,7 +95,9 @@ class TestVideoDecoderOps:
     @pytest.mark.parametrize("device", all_supported_devices())
     def test_get_frame_at_pts(self, device):
         device, device_variant = unsplit_device_str(device)
-        decoder = create_from_file(str(NASA_VIDEO.path), device=device, device_variant=device_variant)
+        decoder = create_from_file(
+            str(NASA_VIDEO.path), device=device, device_variant=device_variant
+        )
         # This frame has pts=6.006 and duration=0.033367, so it should be visible
         # at timestamps in the range [6.006, 6.039367) (not including the last timestamp).
         frame6, _, _ = get_frame_at_pts(decoder, 6.006)
@@ -115,7 +121,9 @@ class TestVideoDecoderOps:
     @pytest.mark.parametrize("device", all_supported_devices())
     def test_get_frame_at_index(self, device):
         device, device_variant = unsplit_device_str(device)
-        decoder = create_from_file(str(NASA_VIDEO.path), device=device, device_variant=device_variant)
+        decoder = create_from_file(
+            str(NASA_VIDEO.path), device=device, device_variant=device_variant
+        )
         frame0, _, _ = get_frame_at_index(decoder, frame_index=0)
         reference_frame0 = NASA_VIDEO.get_frame_data_by_index(0)
         assert_frames_equal(frame0, reference_frame0.to(device))
@@ -133,7 +141,9 @@ class TestVideoDecoderOps:
     @pytest.mark.parametrize("device", all_supported_devices())
     def test_get_frame_with_info_at_index(self, device):
         device, device_variant = unsplit_device_str(device)
-        decoder = create_from_file(str(NASA_VIDEO.path), device=device, device_variant=device_variant)
+        decoder = create_from_file(
+            str(NASA_VIDEO.path), device=device, device_variant=device_variant
+        )
         frame6, pts, duration = get_frame_at_index(decoder, frame_index=180)
         reference_frame6 = NASA_VIDEO.get_frame_data_by_index(
             INDEX_OF_FRAME_AT_6_SECONDS
@@ -145,7 +155,9 @@ class TestVideoDecoderOps:
     @pytest.mark.parametrize("device", all_supported_devices())
     def test_get_frames_at_indices(self, device):
         device, device_variant = unsplit_device_str(device)
-        decoder = create_from_file(str(NASA_VIDEO.path), device=device, device_variant=device_variant)
+        decoder = create_from_file(
+            str(NASA_VIDEO.path), device=device, device_variant=device_variant
+        )
         frames0and180, *_ = get_frames_at_indices(decoder, frame_indices=[0, 180])
         reference_frame0 = NASA_VIDEO.get_frame_data_by_index(0)
         reference_frame180 = NASA_VIDEO.get_frame_data_by_index(
@@ -157,7 +169,9 @@ class TestVideoDecoderOps:
     @pytest.mark.parametrize("device", all_supported_devices())
     def test_get_frames_at_indices_unsorted_indices(self, device):
         device, device_variant = unsplit_device_str(device)
-        decoder = create_from_file(str(NASA_VIDEO.path), device=device, device_variant=device_variant)
+        decoder = create_from_file(
+            str(NASA_VIDEO.path), device=device, device_variant=device_variant
+        )
 
         frame_indices = [2, 0, 1, 0, 2]
 
@@ -184,7 +198,9 @@ class TestVideoDecoderOps:
     @pytest.mark.parametrize("device", all_supported_devices())
     def test_get_frames_at_indices_negative_indices(self, device):
         device, device_variant = unsplit_device_str(device)
-        decoder = create_from_file(str(NASA_VIDEO.path), device=device, device_variant=device_variant)
+        decoder = create_from_file(
+            str(NASA_VIDEO.path), device=device, device_variant=device_variant
+        )
         frames389and387and1, *_ = get_frames_at_indices(
             decoder, frame_indices=[-1, -3, -389]
         )
@@ -198,7 +214,9 @@ class TestVideoDecoderOps:
     @pytest.mark.parametrize("device", all_supported_devices())
     def test_get_frames_at_indices_fail_on_invalid_negative_indices(self, device):
         device, device_variant = unsplit_device_str(device)
-        decoder = create_from_file(str(NASA_VIDEO.path), device=device, device_variant=device_variant)
+        decoder = create_from_file(
+            str(NASA_VIDEO.path), device=device, device_variant=device_variant
+        )
         with pytest.raises(
             IndexError,
             match="negative indices must have an absolute value less than the number of frames",
@@ -210,7 +228,9 @@ class TestVideoDecoderOps:
     @pytest.mark.parametrize("device", all_supported_devices())
     def test_get_frames_by_pts(self, device):
         device, device_variant = unsplit_device_str(device)
-        decoder = create_from_file(str(NASA_VIDEO.path), device=device, device_variant=device_variant)
+        decoder = create_from_file(
+            str(NASA_VIDEO.path), device=device, device_variant=device_variant
+        )
 
         # Note: 13.01 should give the last video frame for the NASA video
         timestamps = [2, 0, 1, 0 + 1e-3, 13.01, 2 + 1e-3]
@@ -242,7 +262,9 @@ class TestVideoDecoderOps:
         # APIs exactly where those frames are supposed to start. We assert that
         # we get the expected frame.
         device, device_variant = unsplit_device_str(device)
-        decoder = create_from_file(str(NASA_VIDEO.path), device=device, device_variant=device_variant)
+        decoder = create_from_file(
+            str(NASA_VIDEO.path), device=device, device_variant=device_variant
+        )
 
         metadata = get_json_metadata(decoder)
         metadata_dict = json.loads(metadata)
@@ -293,7 +315,9 @@ class TestVideoDecoderOps:
     @pytest.mark.parametrize("device", all_supported_devices())
     def test_get_frames_in_range(self, device):
         device, device_variant = unsplit_device_str(device)
-        decoder = create_from_file(str(NASA_VIDEO.path), device=device, device_variant=device_variant)
+        decoder = create_from_file(
+            str(NASA_VIDEO.path), device=device, device_variant=device_variant
+        )
 
         # ensure that the degenerate case of a range of size 1 works
         ref_frame0 = NASA_VIDEO.get_frame_data_by_range(0, 1)
@@ -333,7 +357,9 @@ class TestVideoDecoderOps:
     @pytest.mark.parametrize("device", all_supported_devices())
     def test_throws_exception_at_eof(self, device):
         device, device_variant = unsplit_device_str(device)
-        decoder = create_from_file(str(NASA_VIDEO.path), device=device, device_variant=device_variant)
+        decoder = create_from_file(
+            str(NASA_VIDEO.path), device=device, device_variant=device_variant
+        )
 
         seek_to_pts(decoder, 12.979633)
         last_frame, _, _ = get_next_frame(decoder)
@@ -348,7 +374,9 @@ class TestVideoDecoderOps:
     @pytest.mark.parametrize("device", all_supported_devices())
     def test_throws_exception_if_seek_too_far(self, device):
         device, device_variant = unsplit_device_str(device)
-        decoder = create_from_file(str(NASA_VIDEO.path), device=device, device_variant=device_variant)
+        decoder = create_from_file(
+            str(NASA_VIDEO.path), device=device, device_variant=device_variant
+        )
         # pts=12.979633 is the last frame in the video.
         seek_to_pts(decoder, 12.979633 + 1.0e-4)
         with pytest.raises(IndexError, match="no more frames"):
@@ -374,7 +402,9 @@ class TestVideoDecoderOps:
 
         # NB: create needs to happen outside the torch.compile region,
         # for now. Otherwise torch.compile constant-props it.
-        decoder = create_from_file(str(NASA_VIDEO.path), device=device, device_variant=device_variant)
+        decoder = create_from_file(
+            str(NASA_VIDEO.path), device=device, device_variant=device_variant
+        )
         frame0, frame_time6 = get_frame1_and_frame_time6(decoder)
         reference_frame0 = NASA_VIDEO.get_frame_data_by_index(0)
         reference_frame_time6 = NASA_VIDEO.get_frame_data_by_index(
@@ -392,20 +422,34 @@ class TestVideoDecoderOps:
         path = str(NASA_VIDEO.path)
         device, device_variant = unsplit_device_str(device)
         if create_from == "file":
-            decoder = create_from_file(path, device=device, device_variant=device_variant)
+            decoder = create_from_file(
+                path, device=device, device_variant=device_variant
+            )
         elif create_from == "tensor":
             arr = np.fromfile(path, dtype=np.uint8)
             video_tensor = torch.from_numpy(arr)
-            decoder = create_from_tensor(video_tensor, device=device, device_variant=device_variant)
+            decoder = create_from_tensor(
+                video_tensor, device=device, device_variant=device_variant
+            )
         elif create_from == "bytes":
             with open(path, "rb") as f:
                 video_bytes = f.read()
-            decoder = create_from_bytes(video_bytes, device=device, device_variant=device_variant)
+            decoder = create_from_bytes(
+                video_bytes, device=device, device_variant=device_variant
+            )
         elif create_from == "file_like_rawio":
-            decoder = create_from_file_like(open(path, mode="rb", buffering=0), "exact", device=device, device_variant=device_variant)
+            decoder = create_from_file_like(
+                open(path, mode="rb", buffering=0),
+                "exact",
+                device=device,
+                device_variant=device_variant,
+            )
         elif create_from == "file_like_bufferedio":
             decoder = create_from_file_like(
-                open(path, mode="rb", buffering=4096), "exact", device=device, device_variant=device_variant
+                open(path, mode="rb", buffering=4096),
+                "exact",
+                device=device,
+                device_variant=device_variant,
             )
         else:
             raise ValueError("Oops, double check the parametrization of this test!")
@@ -488,8 +532,10 @@ class TestVideoDecoderOps:
             match="Missing frame mappings when custom_frame_mappings seek mode is set.",
         ):
             decoder = create_from_file(
-                str(NASA_VIDEO.path), seek_mode="custom_frame_mappings",
-                device="cpu", stream_index=0,
+                str(NASA_VIDEO.path),
+                seek_mode="custom_frame_mappings",
+                device="cpu",
+                stream_index=0,
             )
 
         with pytest.raises(
@@ -502,8 +548,10 @@ class TestVideoDecoderOps:
                 torch.tensor([1, 2, 3]),
             )
             decoder = create_from_file(
-                str(NASA_VIDEO.path), seek_mode="custom_frame_mappings",
-                device="cpu", stream_index=0,
+                str(NASA_VIDEO.path),
+                seek_mode="custom_frame_mappings",
+                device="cpu",
+                stream_index=0,
                 custom_frame_mappings_pts=wrong_types[0],
                 custom_frame_mappings_keyframe_indices=wrong_types[1],
                 custom_frame_mappings_duration=wrong_types[2],
@@ -519,8 +567,10 @@ class TestVideoDecoderOps:
                 torch.tensor([1, 2, 3]),
             )
             decoder = create_from_file(
-                str(NASA_VIDEO.path), seek_mode="custom_frame_mappings",
-                device="cpu", stream_index=0,
+                str(NASA_VIDEO.path),
+                seek_mode="custom_frame_mappings",
+                device="cpu",
+                stream_index=0,
                 custom_frame_mappings_pts=different_lengths[0],
                 custom_frame_mappings_keyframe_indices=different_lengths[1],
                 custom_frame_mappings_duration=different_lengths[2],
@@ -533,7 +583,8 @@ class TestVideoDecoderOps:
         device, device_variant = unsplit_device_str(device)
         cfm = NASA_VIDEO.get_custom_frame_mappings(stream_index=stream_index)
         decoder = create_from_file(
-            str(NASA_VIDEO.path), seek_mode="custom_frame_mappings",
+            str(NASA_VIDEO.path),
+            seek_mode="custom_frame_mappings",
             device=device,
             device_variant=device_variant,
             stream_index=stream_index,
@@ -566,7 +617,11 @@ class TestVideoDecoderOps:
 
     @pytest.mark.parametrize("color_conversion_library", ("filtergraph", "swscale"))
     def test_color_conversion_library(self, color_conversion_library):
-        decoder = create_from_file(str(NASA_VIDEO.path), device="cpu", color_conversion_library=color_conversion_library)
+        decoder = create_from_file(
+            str(NASA_VIDEO.path),
+            device="cpu",
+            color_conversion_library=color_conversion_library,
+        )
         frame0, *_ = get_next_frame(decoder)
         reference_frame0 = NASA_VIDEO.get_frame_data_by_index(0)
         assert_frames_equal(frame0, reference_frame0)
@@ -937,7 +992,9 @@ class TestAudioDecoderOps:
             open(NASA_VIDEO.path, mode="rb", buffering=buffering)
         )
         device, device_variant = unsplit_device_str(device)
-        decoder = create_from_file_like(file_counter, "approximate", device=device, device_variant=device_variant)
+        decoder = create_from_file_like(
+            file_counter, "approximate", device=device, device_variant=device_variant
+        )
 
         frame0, *_ = get_next_frame(decoder)
         reference_frame0 = NASA_VIDEO.get_frame_data_by_index(0)

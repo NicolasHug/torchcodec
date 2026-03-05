@@ -132,7 +132,7 @@ def create_audio_decoder(
     return (decoder, stream_index, metadata)
 
 
-def _get_and_validate_stream_metadata(
+def _get_and_validate_video_stream_metadata(
     *,
     decoder: Tensor,
     stream_index: int | None = None,
@@ -170,10 +170,7 @@ def _get_and_validate_stream_metadata(
             "The number of frames is unknown. " + _ERROR_REPORTING_INSTRUCTIONS
         )
 
-    return (
-        metadata,
-        stream_index,
-    )
+    return (metadata, stream_index)
 
 
 def create_video_decoder(
@@ -187,7 +184,7 @@ def create_video_decoder(
     device_variant: str = "ffmpeg",
     transforms: Sequence[DecoderTransform | nn.Module] | None = None,
     custom_frame_mappings: tuple[Tensor, Tensor, Tensor] | None = None,
-) -> tuple[Tensor, VideoStreamMetadata, int]:
+) -> tuple[Tensor, int, VideoStreamMetadata]:
     """Create a video decoder and add a video stream.
 
     This function creates a decoder, adds a video stream, and optionally sets
@@ -207,7 +204,7 @@ def create_video_decoder(
         custom_frame_mappings: Optional pre-processed frame mappings data.
 
     Returns:
-        A tuple of (decoder, metadata, stream_index).
+        A tuple of (decoder, stream_index, metadata).
     """
     # Step 1: Create a lightweight decoder (no video stream) to validate
     # stream_index and resolve it if None.
@@ -219,7 +216,7 @@ def create_video_decoder(
     (
         metadata,
         stream_index,
-    ) = _get_and_validate_stream_metadata(
+    ) = _get_and_validate_video_stream_metadata(
         decoder=validation_decoder, stream_index=stream_index
     )
 
@@ -246,7 +243,7 @@ def create_video_decoder(
     (
         metadata,
         stream_index,
-    ) = _get_and_validate_stream_metadata(
+    ) = _get_and_validate_video_stream_metadata(
         decoder=decoder, stream_index=stream_index
     )
 
@@ -258,8 +255,4 @@ def create_video_decoder(
     if transform_specs:
         set_video_transforms(decoder, transform_specs)
 
-    return (
-        decoder,
-        metadata,
-        stream_index,
-    )
+    return (decoder, stream_index, metadata)
