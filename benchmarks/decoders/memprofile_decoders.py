@@ -9,7 +9,7 @@ import importlib
 
 import torch
 from memory_profiler import profile
-from torchcodec._core import add_video_stream, create_from_file, get_next_frame
+from torchcodec._core import create_from_file, get_next_frame
 
 torch._dynamo.config.cache_size_limit = 100
 torch._dynamo.config.capture_dynamic_output_shape_ops = True
@@ -17,8 +17,7 @@ torch._dynamo.config.capture_dynamic_output_shape_ops = True
 
 @profile
 def torchcodec_create_next(video_file):
-    video_decoder = create_from_file(video_file)
-    add_video_stream(video_decoder)
+    video_decoder = create_from_file(video_file, device="cpu")
     get_next_frame(video_decoder)
     return video_decoder
 

@@ -15,7 +15,6 @@ import torch
 import torch.utils.benchmark as benchmark
 
 from torchcodec._core import (
-    _add_video_stream,
     create_from_file,
     get_frames_at_indices,
     get_frames_by_pts,
@@ -235,9 +234,9 @@ class TorchCodecCore(AbstractDecoder):
         self._device = device
 
     def decode_frames(self, video_file, pts_list):
-        decoder = create_from_file(video_file, seek_mode="exact")
-        _add_video_stream(
-            decoder,
+        decoder = create_from_file(
+            video_file,
+            seek_mode="exact",
             num_threads=self._num_threads,
             color_conversion_library=self._color_conversion_library,
             device=self._device,
@@ -246,9 +245,9 @@ class TorchCodecCore(AbstractDecoder):
         return frames
 
     def decode_first_n_frames(self, video_file, n):
-        decoder = create_from_file(video_file, seek_mode="approximate")
-        _add_video_stream(
-            decoder,
+        decoder = create_from_file(
+            video_file,
+            seek_mode="approximate",
             num_threads=self._num_threads,
             color_conversion_library=self._color_conversion_library,
             device=self._device,
@@ -279,11 +278,10 @@ class TorchCodecCoreNonBatch(AbstractDecoder):
         self.transforms_v2 = transforms_v2
 
     def decode_frames(self, video_file, pts_list):
-        decoder = create_from_file(video_file, seek_mode="approximate")
-        num_threads = int(self._num_threads) if self._num_threads else 0
-        _add_video_stream(
-            decoder,
-            num_threads=num_threads,
+        decoder = create_from_file(
+            video_file,
+            seek_mode="approximate",
+            num_threads=int(self._num_threads) if self._num_threads else 0,
             color_conversion_library=self._color_conversion_library,
             device=self._device,
         )
@@ -297,11 +295,10 @@ class TorchCodecCoreNonBatch(AbstractDecoder):
         return frames
 
     def decode_first_n_frames(self, video_file, n):
-        num_threads = int(self._num_threads) if self._num_threads else 0
-        decoder = create_from_file(video_file, seek_mode="approximate")
-        _add_video_stream(
-            decoder,
-            num_threads=num_threads,
+        decoder = create_from_file(
+            video_file,
+            seek_mode="approximate",
+            num_threads=int(self._num_threads) if self._num_threads else 0,
             color_conversion_library=self._color_conversion_library,
             device=self._device,
         )
@@ -314,11 +311,10 @@ class TorchCodecCoreNonBatch(AbstractDecoder):
         return frames
 
     def decode_and_resize(self, video_file, pts_list, height, width, device):
-        num_threads = int(self._num_threads) if self._num_threads else 1
-        decoder = create_from_file(video_file, seek_mode="approximate")
-        _add_video_stream(
-            decoder,
-            num_threads=num_threads,
+        decoder = create_from_file(
+            video_file,
+            seek_mode="approximate",
+            num_threads=int(self._num_threads) if self._num_threads else 1,
             color_conversion_library=self._color_conversion_library,
             device=self._device,
         )
@@ -350,9 +346,9 @@ class TorchCodecCoreBatch(AbstractDecoder):
         self._device = device
 
     def decode_frames(self, video_file, pts_list):
-        decoder = create_from_file(video_file, seek_mode="exact")
-        _add_video_stream(
-            decoder,
+        decoder = create_from_file(
+            video_file,
+            seek_mode="exact",
             num_threads=self._num_threads,
             color_conversion_library=self._color_conversion_library,
             device=self._device,
@@ -361,9 +357,9 @@ class TorchCodecCoreBatch(AbstractDecoder):
         return frames
 
     def decode_first_n_frames(self, video_file, n):
-        decoder = create_from_file(video_file, seek_mode="exact")
-        _add_video_stream(
-            decoder,
+        decoder = create_from_file(
+            video_file,
+            seek_mode="exact",
             num_threads=self._num_threads,
             color_conversion_library=self._color_conversion_library,
             device=self._device,
@@ -531,8 +527,7 @@ class TorchCodecCoreCompiled(AbstractDecoder):
         pass
 
     def decode_frames(self, video_file, pts_list):
-        decoder = create_from_file(video_file)
-        _add_video_stream(decoder)
+        decoder = create_from_file(video_file, device="cpu")
         frames = []
         for pts in pts_list:
             frame = compiled_seek_and_next(decoder, pts)
@@ -540,8 +535,7 @@ class TorchCodecCoreCompiled(AbstractDecoder):
         return frames
 
     def decode_first_n_frames(self, video_file, n):
-        decoder = create_from_file(video_file)
-        _add_video_stream(decoder)
+        decoder = create_from_file(video_file, device="cpu")
         frames = []
         for _ in range(n):
             frame = compiled_next(decoder)
@@ -615,8 +609,7 @@ class TorchAudioDecoder(AbstractDecoder):
 
 
 def create_torchcodec_core_decode_first_frame(video_file):
-    video_decoder = create_from_file(video_file)
-    _add_video_stream(video_decoder)
+    video_decoder = create_from_file(video_file, device="cpu")
     get_next_frame(video_decoder)
     return video_decoder
 

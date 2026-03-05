@@ -14,12 +14,10 @@ from ._metadata import (
     VideoStreamMetadata,
 )
 from .ops import (
-    _add_video_stream,
     _get_backend_details,
     _get_key_frame_indices,
     _test_frame_pts_equality,
     add_audio_stream,
-    add_video_stream,
     core_library_path,
     create_from_bytes,
     create_from_file,
@@ -44,4 +42,5 @@ from .ops import (
     get_next_frame,
     scan_all_streams_to_update_metadata,
     seek_to_pts,
+    set_video_transforms,
 )

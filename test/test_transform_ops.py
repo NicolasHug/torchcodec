@@ -16,11 +16,10 @@ import torch
 import torchcodec
 
 from torchcodec._core import (
-    _add_video_stream,
-    add_video_stream,
     create_from_file,
     get_frame_at_index,
     get_json_metadata,
+    set_video_transforms,
 )
 from torchcodec.decoders import VideoDecoder
 
@@ -381,8 +380,7 @@ class TestPublicVideoDecoderTransformOps:
 
 class TestCoreVideoDecoderTransformOps:
     def get_num_frames_core_ops(self, video):
-        decoder = create_from_file(str(video.path))
-        add_video_stream(decoder)
+        decoder = create_from_file(str(video.path), device="cpu")
         metadata = get_json_metadata(decoder)
         metadata_dict = json.loads(metadata)
         num_frames = metadata_dict["numFramesFromHeader"]
@@ -393,15 +391,15 @@ class TestCoreVideoDecoderTransformOps:
     def test_color_conversion_library(self, video):
         num_frames = self.get_num_frames_core_ops(video)
 
-        filtergraph_decoder = create_from_file(str(video.path))
-        _add_video_stream(
-            filtergraph_decoder,
+        filtergraph_decoder = create_from_file(
+            str(video.path),
+            device="cpu",
             color_conversion_library="filtergraph",
         )
 
-        swscale_decoder = create_from_file(str(video.path))
-        _add_video_stream(
-            swscale_decoder,
+        swscale_decoder = create_from_file(
+            str(video.path),
+            device="cpu",
             color_conversion_library="swscale",
         )
 
@@ -466,8 +464,7 @@ class TestCoreVideoDecoderTransformOps:
             ]
             subprocess.check_call(command)
 
-        decoder = create_from_file(str(video_path))
-        add_video_stream(decoder)
+        decoder = create_from_file(str(video_path), device="cpu")
         metadata = get_json_metadata(decoder)
         metadata_dict = json.loads(metadata)
         assert metadata_dict["width"] == width
@@ -476,16 +473,13 @@ class TestCoreVideoDecoderTransformOps:
         num_frames = metadata_dict["numFramesFromHeader"]
         assert num_frames is not None and num_frames == 1
 
-        filtergraph_decoder = create_from_file(str(video_path))
-        _add_video_stream(
-            filtergraph_decoder,
+        filtergraph_decoder = create_from_file(
+            str(video_path),
+            device="cpu",
             color_conversion_library="filtergraph",
         )
 
-        auto_decoder = create_from_file(str(video_path))
-        add_video_stream(
-            auto_decoder,
-        )
+        auto_decoder = create_from_file(str(video_path), device="cpu")
 
         filtergraph_frame0, *_ = get_frame_at_index(filtergraph_decoder, frame_index=0)
         auto_frame0, *_ = get_frame_at_index(auto_decoder, frame_index=0)
@@ -493,26 +487,26 @@ class TestCoreVideoDecoderTransformOps:
 
     @needs_cuda
     def test_scaling_on_cuda_fails(self):
-        decoder = create_from_file(str(NASA_VIDEO.path))
+        decoder = create_from_file(str(NASA_VIDEO.path), device="cuda")
         with pytest.raises(
             RuntimeError,
             match="Transforms are only supported for CPU devices.",
         ):
-            add_video_stream(decoder, device="cuda", transform_specs="resize, 100, 100")
+            set_video_transforms(decoder, "resize, 100, 100")
 
     def test_transform_fails(self):
-        decoder = create_from_file(str(NASA_VIDEO.path))
+        decoder = create_from_file(str(NASA_VIDEO.path), device="cpu")
         with pytest.raises(
             RuntimeError,
             match="Invalid transform spec",
         ):
-            add_video_stream(decoder, transform_specs=";")
+            set_video_transforms(decoder, ";")
 
         with pytest.raises(
             RuntimeError,
             match="Invalid transform name",
         ):
-            add_video_stream(decoder, transform_specs="invalid, 1, 2")
+            set_video_transforms(decoder, "invalid, 1, 2")
 
     def test_resize_ffmpeg(self):
         height = 135
@@ -521,8 +515,8 @@ class TestCoreVideoDecoderTransformOps:
         resize_spec = f"resize, {height}, {width}"
         resize_filtergraph = f"scale={width}:{height}:flags=bilinear"
 
-        decoder_resize = create_from_file(str(NASA_VIDEO.path))
-        add_video_stream(decoder_resize, transform_specs=resize_spec)
+        decoder_resize = create_from_file(str(NASA_VIDEO.path), device="cpu")
+        set_video_transforms(decoder_resize, resize_spec)
 
         for frame_index in [17, 230, 389]:
             frame_resize, *_ = get_frame_at_index(
@@ -543,36 +537,36 @@ class TestCoreVideoDecoderTransformOps:
                 assert_frames_equal(frame_resize, frame_ref)
 
     def test_resize_transform_fails(self):
-        decoder = create_from_file(str(NASA_VIDEO.path))
+        decoder = create_from_file(str(NASA_VIDEO.path), device="cpu")
         with pytest.raises(
             RuntimeError,
             match="must have 3 elements",
         ):
-            add_video_stream(decoder, transform_specs="resize, 100, 100, 100")
+            set_video_transforms(decoder, "resize, 100, 100, 100")
 
         with pytest.raises(
             RuntimeError,
             match="must be a positive integer",
         ):
-            add_video_stream(decoder, transform_specs="resize, -10, 100")
+            set_video_transforms(decoder, "resize, -10, 100")
 
         with pytest.raises(
             RuntimeError,
             match="must be a positive integer",
         ):
-            add_video_stream(decoder, transform_specs="resize, 100, 0")
+            set_video_transforms(decoder, "resize, 100, 0")
 
         with pytest.raises(
             RuntimeError,
             match="cannot be converted to an int",
         ):
-            add_video_stream(decoder, transform_specs="resize, blah, 100")
+            set_video_transforms(decoder, "resize, blah, 100")
 
         with pytest.raises(
             RuntimeError,
             match="out of range",
         ):
-            add_video_stream(decoder, transform_specs="resize, 100, 1000000000000")
+            set_video_transforms(decoder, "resize, 100, 1000000000000")
 
     def test_crop_transform(self):
         # Note that filtergraph accepts dimensions as (w, h) and we accept them as (h, w).
@@ -584,11 +578,10 @@ class TestCoreVideoDecoderTransformOps:
         crop_filtergraph = f"crop={width}:{height}:{x}:{y}:exact=1"
         expected_shape = (NASA_VIDEO.get_num_color_channels(), height, width)
 
-        decoder_crop = create_from_file(str(NASA_VIDEO.path))
-        add_video_stream(decoder_crop, transform_specs=crop_spec)
+        decoder_crop = create_from_file(str(NASA_VIDEO.path), device="cpu")
+        set_video_transforms(decoder_crop, crop_spec)
 
-        decoder_full = create_from_file(str(NASA_VIDEO.path))
-        add_video_stream(decoder_full)
+        decoder_full = create_from_file(str(NASA_VIDEO.path), device="cpu")
 
         for frame_index in [0, 15, 200, 389]:
             frame_crop, *_ = get_frame_at_index(decoder_crop, frame_index=frame_index)
@@ -614,33 +607,33 @@ class TestCoreVideoDecoderTransformOps:
             RuntimeError,
             match="must have 5 elements",
         ):
-            decoder = create_from_file(str(NASA_VIDEO.path))
-            add_video_stream(decoder, transform_specs="crop, 100, 100")
+            decoder = create_from_file(str(NASA_VIDEO.path), device="cpu")
+            set_video_transforms(decoder, "crop, 100, 100")
 
         with pytest.raises(
             RuntimeError,
             match="must be a positive integer",
         ):
-            decoder = create_from_file(str(NASA_VIDEO.path))
-            add_video_stream(decoder, transform_specs="crop, -10, 100, 100, 100")
+            decoder = create_from_file(str(NASA_VIDEO.path), device="cpu")
+            set_video_transforms(decoder, "crop, -10, 100, 100, 100")
 
         with pytest.raises(
             RuntimeError,
             match="cannot be converted to an int",
         ):
-            decoder = create_from_file(str(NASA_VIDEO.path))
-            add_video_stream(decoder, transform_specs="crop, 100, 100, blah, 100")
+            decoder = create_from_file(str(NASA_VIDEO.path), device="cpu")
+            set_video_transforms(decoder, "crop, 100, 100, blah, 100")
 
         with pytest.raises(
             RuntimeError,
             match="x start position, 9999, out of bounds",
         ):
-            decoder = create_from_file(str(NASA_VIDEO.path))
-            add_video_stream(decoder, transform_specs="crop, 100, 100, 9999, 100")
+            decoder = create_from_file(str(NASA_VIDEO.path), device="cpu")
+            set_video_transforms(decoder, "crop, 100, 100, 9999, 100")
 
         with pytest.raises(
             RuntimeError,
             match=r"Crop output height \(999\) is greater than input height \(270\)",
         ):
-            decoder = create_from_file(str(NASA_VIDEO.path))
-            add_video_stream(decoder, transform_specs="crop, 999, 100, 100, 100")
+            decoder = create_from_file(str(NASA_VIDEO.path), device="cpu")
+            set_video_transforms(decoder, "crop, 999, 100, 100, 100")

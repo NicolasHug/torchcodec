@@ -25,22 +25,26 @@ def decode_full_video(video_path, decode_device_string, resize_device_string):
     # We use the core API instead of SimpleVideoDecoder because the core API
     # allows us to natively resize as part of the decode step.
     print(f"{decode_device_string=} {resize_device_string=}")
-    decoder = torchcodec._core.create_from_file(video_path)
     num_threads = None
     if "cuda" in decode_device_string:
         num_threads = 1
+
+    decoder = torchcodec._core.create_from_file(
+        video_path,
+        stream_index=-1,
+        device=decode_device_string,
+        num_threads=num_threads,
+    )
 
     resize_spec = ""
     if "native" in resize_device_string:
         resize_spec = f"resize, {RESIZED_HEIGHT}, {RESIZED_WIDTH}"
 
-    torchcodec._core._add_video_stream(
-        decoder,
-        stream_index=-1,
-        device=decode_device_string,
-        num_threads=num_threads,
-        transform_specs=resize_spec,
-    )
+    if resize_spec:
+        torchcodec._core.set_video_transforms(
+            decoder,
+            transform_specs=resize_spec,
+        )
 
     start_time = time.time()
     frame_count = 0

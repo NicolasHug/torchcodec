@@ -11,7 +11,6 @@ import pytest
 
 from torchcodec import ffmpeg_major_version
 from torchcodec._core import (
-    add_video_stream,
     AudioStreamMetadata,
     create_from_file,
     get_container_metadata,
@@ -28,18 +27,21 @@ from .utils import NASA_AUDIO_MP3, NASA_VIDEO, NASA_VIDEO_ROTATED
 
 
 def _get_container_metadata(path, seek_mode):
-    decoder = create_from_file(str(path), seek_mode=seek_mode)
-
-    # For custom_frame_mappings seek mode, add a video stream to update metadata
     if seek_mode == "custom_frame_mappings":
-        custom_frame_mappings = NASA_VIDEO.get_custom_frame_mappings()
+        cfm = NASA_VIDEO.get_custom_frame_mappings()
 
         # Add the best video stream (index 3 for NASA_VIDEO)
-        add_video_stream(
-            decoder,
+        decoder = create_from_file(
+            str(path),
+            seek_mode=seek_mode,
+            device="cpu",
             stream_index=NASA_VIDEO.default_stream_index,
-            custom_frame_mappings=custom_frame_mappings,
+            custom_frame_mappings_pts=cfm[0],
+            custom_frame_mappings_keyframe_indices=cfm[1],
+            custom_frame_mappings_duration=cfm[2],
         )
+    else:
+        decoder = create_from_file(str(path), seek_mode=seek_mode)
     return get_container_metadata(decoder)
 
 

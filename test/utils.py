@@ -65,7 +65,7 @@ def unsplit_device_str(device_str: str) -> str:
     # when `device` comes from all_supported_devices() and may be _CUDA_BETA_DEVICE_STR.
     # It is used:
     # - before calling `.to(device)` where device can't be _CUDA_BETA_DEVICE_STR.
-    # - before calling add_video_stream(device=device, device_variant=device_variant)
+    # - before calling create_from_file(device=device, device_variant=device_variant)
     if device_str == _CUDA_BETA_DEVICE_STR:
         return "cuda", "beta"
     else:

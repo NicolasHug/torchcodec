@@ -15,13 +15,13 @@ import torch
 from torch import nn, Tensor
 
 from torchcodec._core import (
-    add_video_stream,
     create_from_tensor,
     get_frames_at_indices,
     get_json_metadata,
     get_next_frame,
     scan_all_streams_to_update_metadata,
     seek_to_pts,
+    set_video_transforms,
 )
 
 
@@ -136,20 +136,22 @@ class DEPRECATED_VideoClipSampler(nn.Module):
 
         """
 
-        video_decoder = create_from_tensor(video_data)
+        video_decoder = create_from_tensor(video_data, device="cpu")
         scan_all_streams_to_update_metadata(video_decoder)
-        add_video_stream(video_decoder)
         metadata_json = json.loads(get_json_metadata(video_decoder))
         target_width, target_height = self._compute_frame_width_height(
             metadata_json["width"], metadata_json["height"]
         )
 
-        video_decoder = create_from_tensor(video_data)
+        video_decoder = create_from_tensor(
+            video_data,
+            device="cpu",
+            num_threads=self.decoder_args.num_threads,
+        )
         scan_all_streams_to_update_metadata(video_decoder)
-        add_video_stream(
+        set_video_transforms(
             video_decoder,
             transform_specs=f"resize, {target_height}, {target_width}",
-            num_threads=self.decoder_args.num_threads,
         )
 
         clips: list[Any] = []

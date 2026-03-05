@@ -31,18 +31,40 @@ class FORCE_PUBLIC_VISIBILITY SingleStreamDecoder {
   // CONSTRUCTION API
   // --------------------------------------------------------------------------
 
+  // FrameMappings is used for the custom_frame_mappings seek mode to store
+  // metadata of frames in a stream. The size of all tensors in this struct must
+  // match.
+  struct FrameMappings {
+    // 1D tensor of int64, each value is the PTS of a frame in timebase units.
+    torch::stable::Tensor all_frames;
+    // 1D tensor of bool, each value indicates if the corresponding frame in
+    // all_frames is a key frame.
+    torch::stable::Tensor is_key_frame;
+    // 1D tensor of int64, each value is the duration of the corresponding frame
+    // in all_frames in timebase units.
+    torch::stable::Tensor duration;
+  };
+
   // Creates a SingleStreamDecoder from the video at videoFilePath.
+  // If videoStreamOptions is provided, a video stream is also added.
   explicit SingleStreamDecoder(
       const std::string& videoFilePath,
-      SeekMode seekMode = SeekMode::exact);
+      SeekMode seekMode = SeekMode::exact,
+      std::optional<int> streamIndex = std::nullopt,
+      std::optional<VideoStreamOptions> videoStreamOptions = std::nullopt,
+      std::optional<FrameMappings> customFrameMappings = std::nullopt);
 
   // Creates a SingleStreamDecoder using the provided AVIOContext inside the
   // AVIOContextHolder. The AVIOContextHolder is the base class, and the
   // derived class will have specialized how the custom read, seek and writes
   // work.
+  // If videoStreamOptions is provided, a video stream is also added.
   explicit SingleStreamDecoder(
       std::unique_ptr<AVIOContextHolder> context,
-      SeekMode seekMode = SeekMode::exact);
+      SeekMode seekMode = SeekMode::exact,
+      std::optional<int> streamIndex = std::nullopt,
+      std::optional<VideoStreamOptions> videoStreamOptions = std::nullopt,
+      std::optional<FrameMappings> customFrameMappings = std::nullopt);
 
   // --------------------------------------------------------------------------
   // VIDEO METADATA QUERY API
@@ -69,29 +91,15 @@ class FORCE_PUBLIC_VISIBILITY SingleStreamDecoder {
   // int64 values, where each value is the frame index for a key frame.
   torch::stable::Tensor getKeyFrameIndices();
 
-  // FrameMappings is used for the custom_frame_mappings seek mode to store
-  // metadata of frames in a stream. The size of all tensors in this struct must
-  // match.
-
   // --------------------------------------------------------------------------
   // ADDING STREAMS API
   // --------------------------------------------------------------------------
-  struct FrameMappings {
-    // 1D tensor of int64, each value is the PTS of a frame in timebase units.
-    torch::stable::Tensor all_frames;
-    // 1D tensor of bool, each value indicates if the corresponding frame in
-    // all_frames is a key frame.
-    torch::stable::Tensor is_key_frame;
-    // 1D tensor of int64, each value is the duration of the corresponding frame
-    // in all_frames in timebase units.
-    torch::stable::Tensor duration;
-  };
 
-  void addVideoStream(
-      int streamIndex,
-      std::vector<Transform*>& transforms,
-      const VideoStreamOptions& videoStreamOptions = VideoStreamOptions(),
-      std::optional<FrameMappings> customFrameMappings = std::nullopt);
+  // Sets user-provided transforms on the active video stream. Must be called
+  // after construction (when a video stream was added). Rotation transforms
+  // are handled internally during construction and are prepended automatically.
+  void setTransforms(std::vector<Transform*>& transforms);
+
   void addAudioStream(
       int streamIndex,
       const AudioStreamOptions& audioStreamOptions = AudioStreamOptions());
@@ -250,6 +258,13 @@ class FORCE_PUBLIC_VISIBILITY SingleStreamDecoder {
   // --------------------------------------------------------------------------
 
   void initializeDecoder();
+
+  // Adds a video stream (without transforms). Called from the constructor
+  // when videoStreamOptions is provided.
+  void addVideoStream(
+      int streamIndex,
+      const VideoStreamOptions& videoStreamOptions,
+      std::optional<FrameMappings> customFrameMappings = std::nullopt);
 
   // Reads the user provided frame index and updates each StreamInfo's index,
   // i.e. the allFrames and keyFrames vectors, and

@@ -45,7 +45,7 @@ struct VideoStreamOptions {
   // the device of the input frame tensor.
   StableDevice device = StableDevice(kStableCPU);
   // Device variant (e.g., "ffmpeg", "beta", etc.)
-  std::string_view deviceVariant = "ffmpeg";
+  std::string deviceVariant = "ffmpeg";
 
   // Encoding options
   std::optional<std::string> codec;

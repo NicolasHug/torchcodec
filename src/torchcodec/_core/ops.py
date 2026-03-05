@@ -68,44 +68,7 @@ create_from_tensor = torch._dynamo.disallow_in_graph(
 _create_from_file_like = torch._dynamo.disallow_in_graph(
     torch.ops.torchcodec_ns._create_from_file_like.default
 )
-_add_video_stream_raw = torch.ops.torchcodec_ns.add_video_stream.default
-_add_video_stream = torch.ops.torchcodec_ns._add_video_stream.default
-
-
-def add_video_stream(
-    decoder: torch.Tensor,
-    *,
-    num_threads: int | None = None,
-    dimension_order: str | None = None,
-    stream_index: int | None = None,
-    device: str = "cpu",
-    device_variant: str = "ffmpeg",
-    transform_specs: str = "",
-    custom_frame_mappings: (
-        tuple[torch.Tensor, torch.Tensor, torch.Tensor] | None
-    ) = None,
-) -> None:
-    custom_frame_mappings_pts: torch.Tensor | None = None
-    custom_frame_mappings_keyframe_indices: torch.Tensor | None = None
-    custom_frame_mappings_duration: torch.Tensor | None = None
-    if custom_frame_mappings is not None:
-        (
-            custom_frame_mappings_pts,
-            custom_frame_mappings_keyframe_indices,
-            custom_frame_mappings_duration,
-        ) = custom_frame_mappings
-    _add_video_stream_raw(
-        decoder,
-        num_threads=num_threads,
-        dimension_order=dimension_order,
-        stream_index=stream_index,
-        device=device,
-        device_variant=device_variant,
-        transform_specs=transform_specs,
-        custom_frame_mappings_pts=custom_frame_mappings_pts,
-        custom_frame_mappings_duration=custom_frame_mappings_duration,
-        custom_frame_mappings_keyframe_indices=custom_frame_mappings_keyframe_indices,
-    )
+set_video_transforms = torch.ops.torchcodec_ns.set_video_transforms.default
 
 
 add_audio_stream = torch.ops.torchcodec_ns.add_audio_stream.default
@@ -141,17 +104,23 @@ _get_backend_details = torch.ops.torchcodec_ns._get_backend_details.default
 # =============================
 # Functions not related to custom ops, but similar implementation to c++ ops
 # =============================
-def create_from_bytes(video_bytes: bytes, seek_mode: str | None = None) -> torch.Tensor:
+def create_from_bytes(
+    video_bytes: bytes,
+    seek_mode: str | None = None,
+    **kwargs,
+) -> torch.Tensor:
     with warnings.catch_warnings():
         # Ignore warning stating that the underlying video_bytes buffer is
         # non-writable.
         warnings.filterwarnings("ignore", category=UserWarning)
         buffer = torch.frombuffer(video_bytes, dtype=torch.uint8)
-    return create_from_tensor(buffer, seek_mode)
+    return create_from_tensor(buffer, seek_mode, **kwargs)
 
 
 def create_from_file_like(
-    file_like: io.RawIOBase | io.BufferedReader, seek_mode: str | None = None
+    file_like: io.RawIOBase | io.BufferedReader,
+    seek_mode: str | None = None,
+    **kwargs,
 ) -> torch.Tensor:
     assert _pybind_ops is not None
     return _create_from_file_like(
@@ -159,6 +128,7 @@ def create_from_file_like(
             file_like, False  # False means not for writing
         ),
         seek_mode,
+        **kwargs,
     )
 
 
@@ -268,13 +238,35 @@ def get_frames_by_pts(
 # Abstract impl for the operators. Needed by torch.compile.
 # ==============================
 @register_fake("torchcodec_ns::create_from_file")
-def create_from_file_abstract(filename: str, seek_mode: str | None) -> torch.Tensor:
+def create_from_file_abstract(
+    filename: str,
+    seek_mode: str | None,
+    stream_index: int | None = None,
+    num_threads: int | None = None,
+    dimension_order: str | None = None,
+    device: str | None = None,
+    device_variant: str | None = None,
+    custom_frame_mappings_pts: torch.Tensor | None = None,
+    custom_frame_mappings_duration: torch.Tensor | None = None,
+    custom_frame_mappings_keyframe_indices: torch.Tensor | None = None,
+    color_conversion_library: str | None = None,
+) -> torch.Tensor:
     return torch.empty([], dtype=torch.long)
 
 
 @register_fake("torchcodec_ns::_create_from_file_like")
 def _create_from_file_like_abstract(
-    file_like: int, seek_mode: str | None
+    file_like: int,
+    seek_mode: str | None,
+    stream_index: int | None = None,
+    num_threads: int | None = None,
+    dimension_order: str | None = None,
+    device: str | None = None,
+    device_variant: str | None = None,
+    custom_frame_mappings_pts: torch.Tensor | None = None,
+    custom_frame_mappings_duration: torch.Tensor | None = None,
+    custom_frame_mappings_keyframe_indices: torch.Tensor | None = None,
+    color_conversion_library: str | None = None,
 ) -> torch.Tensor:
     return torch.empty([], dtype=torch.long)
 
@@ -361,42 +353,25 @@ def _encode_video_to_file_like_abstract(
 
 @register_fake("torchcodec_ns::create_from_tensor")
 def create_from_tensor_abstract(
-    video_tensor: torch.Tensor, seek_mode: str | None
-) -> torch.Tensor:
-    return torch.empty([], dtype=torch.long)
-
-
-@register_fake("torchcodec_ns::_add_video_stream")
-def _add_video_stream_abstract(
-    decoder: torch.Tensor,
-    *,
+    video_tensor: torch.Tensor,
+    seek_mode: str | None,
+    stream_index: int | None = None,
     num_threads: int | None = None,
     dimension_order: str | None = None,
-    stream_index: int | None = None,
-    device: str = "cpu",
-    device_variant: str = "ffmpeg",
-    transform_specs: str = "",
+    device: str | None = None,
+    device_variant: str | None = None,
     custom_frame_mappings_pts: torch.Tensor | None = None,
     custom_frame_mappings_duration: torch.Tensor | None = None,
     custom_frame_mappings_keyframe_indices: torch.Tensor | None = None,
     color_conversion_library: str | None = None,
-) -> None:
-    return
+) -> torch.Tensor:
+    return torch.empty([], dtype=torch.long)
 
 
-@register_fake("torchcodec_ns::add_video_stream")
-def add_video_stream_abstract(
+@register_fake("torchcodec_ns::set_video_transforms")
+def set_video_transforms_abstract(
     decoder: torch.Tensor,
-    *,
-    num_threads: int | None = None,
-    dimension_order: str | None = None,
-    stream_index: int | None = None,
-    device: str = "cpu",
-    device_variant: str = "ffmpeg",
-    transform_specs: str = "",
-    custom_frame_mappings_pts: torch.Tensor | None = None,
-    custom_frame_mappings_duration: torch.Tensor | None = None,
-    custom_frame_mappings_keyframe_indices: torch.Tensor | None = None,
+    transform_specs: str,
 ) -> None:
     return
 

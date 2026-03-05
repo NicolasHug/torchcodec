@@ -41,7 +41,10 @@ int64_t getPtsOrDts(const UniqueAVFrame& avFrame) {
 
 SingleStreamDecoder::SingleStreamDecoder(
     const std::string& videoFilePath,
-    SeekMode seekMode)
+    SeekMode seekMode,
+    std::optional<int> streamIndex,
+    std::optional<VideoStreamOptions> videoStreamOptions,
+    std::optional<FrameMappings> customFrameMappings)
     : seekMode_(seekMode) {
   setFFmpegLogLevel();
 
@@ -56,11 +59,21 @@ SingleStreamDecoder::SingleStreamDecoder(
   formatContext_.reset(rawContext);
 
   initializeDecoder();
+
+  if (videoStreamOptions.has_value()) {
+    addVideoStream(
+        streamIndex.value_or(-1),
+        videoStreamOptions.value(),
+        customFrameMappings);
+  }
 }
 
 SingleStreamDecoder::SingleStreamDecoder(
     std::unique_ptr<AVIOContextHolder> context,
-    SeekMode seekMode)
+    SeekMode seekMode,
+    std::optional<int> streamIndex,
+    std::optional<VideoStreamOptions> videoStreamOptions,
+    std::optional<FrameMappings> customFrameMappings)
     : seekMode_(seekMode), avioContextHolder_(std::move(context)) {
   setFFmpegLogLevel();
 
@@ -85,6 +98,13 @@ SingleStreamDecoder::SingleStreamDecoder(
   formatContext_.reset(rawContext);
 
   initializeDecoder();
+
+  if (videoStreamOptions.has_value()) {
+    addVideoStream(
+        streamIndex.value_or(-1),
+        videoStreamOptions.value(),
+        customFrameMappings);
+  }
 }
 
 void SingleStreamDecoder::initializeDecoder() {
@@ -531,13 +551,8 @@ void SingleStreamDecoder::addStream(
 
 void SingleStreamDecoder::addVideoStream(
     int streamIndex,
-    std::vector<Transform*>& transforms,
     const VideoStreamOptions& videoStreamOptions,
     std::optional<FrameMappings> customFrameMappings) {
-  STD_TORCH_CHECK(
-      transforms.empty() || videoStreamOptions.device == kStableCPU,
-      " Transforms are only supported for CPU devices.");
-
   addStream(
       streamIndex,
       AVMEDIA_TYPE_VIDEO,
@@ -597,8 +612,27 @@ void SingleStreamDecoder::addVideoStream(
     transforms_.push_back(std::move(rotationTransform));
   }
 
-  // Note that we are claiming ownership of the transform objects passed in to
-  // us.
+  deviceInterface_->initializeVideo(
+      videoStreamOptions, transforms_, resizedOutputDims_);
+}
+
+void SingleStreamDecoder::setTransforms(
+    std::vector<Transform*>& transforms) {
+  validateActiveStream(AVMEDIA_TYPE_VIDEO);
+
+  const auto& videoStreamOptions =
+      streamInfos_[activeStreamIndex_].videoStreamOptions;
+
+  STD_TORCH_CHECK(
+      transforms.empty() || videoStreamOptions.device == kStableCPU,
+      " Transforms are only supported for CPU devices.");
+
+  // Compute the current input dims for user transforms. If rotation was
+  // applied during addVideoStream, resizedOutputDims_ reflects the
+  // post-rotation dims. Otherwise, use preRotationDims_.
+  FrameDims currInputDims =
+      resizedOutputDims_.value_or(preRotationDims_);
+
   // Validate and add user transforms
   for (auto& transform : transforms) {
     STD_TORCH_CHECK(
@@ -611,6 +645,7 @@ void SingleStreamDecoder::addVideoStream(
     transforms_.push_back(std::unique_ptr<Transform>(transform));
   }
 
+  // Re-initialize device interface with all transforms (rotation + user)
   deviceInterface_->initializeVideo(
       videoStreamOptions, transforms_, resizedOutputDims_);
 }
