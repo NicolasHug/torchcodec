@@ -26,15 +26,15 @@ CUDA_LEAF_CATEGORIES = {
     "seek": "seek",
     "demux": "demux",
     "bitstream_filter": "BSF",
-    # packet_parse_and_decode includes the nvdec_decode callback, but
-    # nvdec_decode (cuvidDecodePicture) is non-blocking so its measured time is
-    # just launch overhead — the real NVDEC wait is in map_frame.  We treat
-    # packet_parse_and_decode as a leaf representing "CPU-side parsing + trivial
-    # non-blocking decode submit".
-    # We exclude "decode" (parent of bitstream_filter + packet_parse_and_decode)
-    # and "nvdec_decode" (nested inside packet_parse_and_decode) to avoid
-    # double-counting.
-    "packet_parse_and_decode": "parsing",
+    # packet_parse_and_decode wraps cuvidParseVideoData which triggers
+    # nvdec_decode (cuvidDecodePicture) as a synchronous callback.
+    # We show both separately: "parsing" is computed as
+    # packet_parse_and_decode - nvdec_decode (pure CPU-side parsing),
+    # and "nvdec_decode" shows the cuvidDecodePicture time which may or
+    # may not block depending on NVDEC surface availability.
+    # We exclude "decode" (parent of BSF + packet_parse_and_decode).
+    "_parsing": "parsing",
+    "nvdec_decode": "nvdec_decode",
     "map_frame": "map_frame",
     "unmap_frame": "unmap_frame",
     "convert_avframe": "YUV -> RGB",
@@ -89,8 +89,8 @@ def ensure_test_videos(specs, gop):
     print()
 
 
-def _create_decoder(video_path, device, use_beta):
-    if use_beta:
+def _create_decoder(video_path, device):
+    if device.startswith("cuda"):
         with torchcodec.decoders.set_cuda_backend("beta"):
             return torchcodec.decoders.VideoDecoder(
                 video_path, device=device, seek_mode="approximate"
@@ -113,7 +113,7 @@ def _decode_frames(decoder, sampling, step):
         return len(indices)
 
 
-def run_one(video_path, device, use_beta=False, sampling="all", step=50,
+def run_one(video_path, device, sampling="all", step=50,
             warmup=False):
     """Run benchmark for a single video.
 
@@ -122,7 +122,7 @@ def run_one(video_path, device, use_beta=False, sampling="all", step=50,
         warmup: if True, run one untimed warmup iteration first (e.g. to warm the NVDEC cache).
     """
     if warmup:
-        decoder = _create_decoder(video_path, device, use_beta)
+        decoder = _create_decoder(video_path, device)
         _decode_frames(decoder, sampling, step)
         del decoder
 
@@ -132,7 +132,7 @@ def run_one(video_path, device, use_beta=False, sampling="all", step=50,
         ops.reset_benchmark()
         ops.enable_benchmark(True)
 
-        decoder = _create_decoder(video_path, device, use_beta)
+        decoder = _create_decoder(video_path, device)
         num_frames_decoded = _decode_frames(decoder, sampling, step)
         del decoder
 
@@ -152,6 +152,20 @@ def run_one(video_path, device, use_beta=False, sampling="all", step=50,
                 sum(v[1] for v in vals) // len(vals),
             )
     return averaged, num_frames_decoded
+
+
+def _add_synthetic_timers(results):
+    """Compute synthetic timer entries derived from raw C++ timers.
+
+    _parsing = packet_parse_and_decode - nvdec_decode (pure CPU-side parsing).
+    """
+    if "packet_parse_and_decode" in results and "nvdec_decode" in results:
+        parse_ms, parse_count = results["packet_parse_and_decode"]
+        nvdec_ms, _ = results["nvdec_decode"]
+        results["_parsing"] = (max(0, parse_ms - nvdec_ms), parse_count)
+    elif "packet_parse_and_decode" in results:
+        results["_parsing"] = results["packet_parse_and_decode"]
+    return results
 
 
 def _make_stacked_bar_pair(
@@ -393,6 +407,19 @@ def _leaf_total_ms(results, leaf_categories):
     return sum(results[k][0] for k in leaf_categories if k in results)
 
 
+def _print_breakdown(results, leaf_categories):
+    """Print total ms per leaf category."""
+    entries = []
+    for cpp_name, display_name in leaf_categories.items():
+        if cpp_name in results:
+            ms, count = results[cpp_name]
+            entries.append((display_name, ms, count))
+    entries.sort(key=lambda x: -x[1])
+    total = sum(ms for _, ms, _ in entries)
+    for name, ms, count in entries:
+        if ms >= 0.01:
+            print(f"      {name:25s} {ms:8.2f}ms  ({100*ms/total:5.1f}%)  count={count}")
+
 def main():
     parser = argparse.ArgumentParser(description="Benchmark torchcodec decoding pipeline")
     parser.add_argument(
@@ -463,6 +490,7 @@ def main():
             total = _leaf_total_ms(results, CPU_LEAF_CATEGORIES)
             fps = num_frames / (total / 1000) if total > 0 else 0
             print(f"{num_frames} frames, {total:.1f}ms, {fps:.0f} fps")
+            _print_breakdown(results, CPU_LEAF_CATEGORIES)
             cpu_all[label] = (results, num_frames)
 
         print(f"\nRunning CPU benchmarks (every {args.step} frames)...")
@@ -474,6 +502,7 @@ def main():
             total = _leaf_total_ms(results, CPU_LEAF_CATEGORIES)
             fps = num_frames / (total / 1000) if total > 0 else 0
             print(f"{num_frames} frames, {total:.1f}ms, {fps:.0f} fps")
+            _print_breakdown(results, CPU_LEAF_CATEGORIES)
             cpu_step[label] = (results, num_frames)
 
     if run_cuda:
@@ -486,23 +515,27 @@ def main():
         for label, path in videos:
             print(f"  CUDA {label}...", end=" ", flush=True)
             results, num_frames = run_one(
-                path, device="cuda:0", use_beta=True, warmup=use_cache,
+                path, device="cuda:0", warmup=use_cache,
             )
+            _add_synthetic_timers(results)
             total = _leaf_total_ms(results, CUDA_LEAF_CATEGORIES)
             fps = num_frames / (total / 1000) if total > 0 else 0
             print(f"{num_frames} frames, {total:.1f}ms, {fps:.0f} fps")
+            _print_breakdown(results, CUDA_LEAF_CATEGORIES)
             cuda_all[label] = (results, num_frames)
 
         print(f"\nRunning CUDA (beta) benchmarks (every {args.step} frames, {cache_label})...")
         for label, path in videos:
             print(f"  CUDA {label}...", end=" ", flush=True)
             results, num_frames = run_one(
-                path, device="cuda:0", use_beta=True, sampling="step",
+                path, device="cuda:0", sampling="step",
                 step=args.step, warmup=use_cache,
             )
+            _add_synthetic_timers(results)
             total = _leaf_total_ms(results, CUDA_LEAF_CATEGORIES)
             fps = num_frames / (total / 1000) if total > 0 else 0
             print(f"{num_frames} frames, {total:.1f}ms, {fps:.0f} fps")
+            _print_breakdown(results, CUDA_LEAF_CATEGORIES)
             cuda_step[label] = (results, num_frames)
 
     # --- Generate plots ---
