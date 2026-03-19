@@ -210,6 +210,72 @@ def _make_stacked_bar_pair(
     fig.suptitle(title, fontsize=14, fontweight="bold")
 
 
+def _make_stats_pair(
+    fig, all_results, step_results, labels, step, is_cuda=False,
+):
+    """Draw 2 side-by-side bar charts showing packet/seek/frame counts."""
+    import numpy as np
+
+    ax_all, ax_step = fig.subplots(1, 2)
+
+    # Which timer gives us "packets decoded"?
+    decode_key = "packet_parse_and_decode" if is_cuda else "decode"
+
+    stat_defs = [
+        ("seeks", "seek"),
+        ("packets read", "demux"),
+        ("packets decoded", decode_key),
+    ]
+    if is_cuda:
+        stat_defs.append(("frames mapped", "map_frame"))
+
+    colors = ["#4e79a7", "#f28e2b", "#e15759", "#76b7b2"]
+
+    for ax, results, title in [
+        (ax_all, all_results, "All frames"),
+        (ax_step, step_results, f"Every {step}th frame"),
+    ]:
+        x = np.arange(len(labels))
+        width = 0.8 / (len(stat_defs) + 1)  # +1 for "frames output"
+
+        for si, (stat_name, timer_key) in enumerate(stat_defs):
+            vals = []
+            for l in labels:
+                r, nf = results[l]
+                count = r[timer_key][1] if timer_key in r else 0
+                vals.append(count)
+            ax.bar(x + si * width, vals, width, label=stat_name,
+                   color=colors[si % len(colors)], edgecolor="white", linewidth=0.5)
+
+        # frames output
+        si = len(stat_defs)
+        vals = [results[l][1] for l in labels]
+        ax.bar(x + si * width, vals, width, label="frames output",
+               color="#59a14f", edgecolor="white", linewidth=0.5)
+
+        ax.set_xticks(x + width * len(stat_defs) / 2)
+        ax.set_xticklabels(labels, rotation=30, ha="right")
+        ax.set_ylabel("Count")
+        ax.set_title(title, fontsize=11, fontweight="bold")
+        ax.legend(loc="upper left", fontsize=7)
+
+        # Annotate packets-per-frame ratio
+        for i, l in enumerate(labels):
+            r, nf = results[l]
+            n_decoded = r[decode_key][1] if decode_key in r else 0
+            if nf > 0:
+                ratio = n_decoded / nf
+                # Put annotation above the tallest bar for this label
+                max_val = max(
+                    r.get(k, (0, 0))[1] for _, k in stat_defs
+                )
+                max_val = max(max_val, nf)
+                ax.text(x[i] + width * len(stat_defs) / 2,
+                        max_val + max_val * 0.02,
+                        f"{ratio:.1f}x", ha="center", va="bottom",
+                        fontsize=8, fontweight="bold", color="#e15759")
+
+
 def make_plots(cpu_all, cpu_step, cuda_all, cuda_step, output_dir, step, labels, gop,
                use_cache=True):
     import matplotlib.pyplot as plt
@@ -264,6 +330,17 @@ def make_plots(cpu_all, cpu_step, cuda_all, cuda_step, output_dir, step, labels,
         print(f"  Saved {path}")
         plot_idx += 1
 
+        # ─── CPU stats: packet/seek counts ───
+        fig = plt.figure(figsize=(14, 5))
+        _make_stats_pair(fig, cpu_all, cpu_step, labels, step, is_cuda=False)
+        fig.suptitle(f"CPU Decode: Packet & Seek Counts {gop_info}", fontsize=14, fontweight="bold")
+        plt.tight_layout()
+        path = os.path.join(output_dir, f"{plot_idx:02d}_cpu_stats.png")
+        plt.savefig(path, dpi=150, bbox_inches="tight")
+        plt.close()
+        print(f"  Saved {path}")
+        plot_idx += 1
+
     # ─── CUDA breakdown: per-frame ───
     if cuda_all:
         cuda_cmap = plt.cm.tab20(np.linspace(0, 1, len(CUDA_LEAF_CATEGORIES)))
@@ -290,6 +367,20 @@ def make_plots(cpu_all, cpu_step, cuda_all, cuda_step, output_dir, step, labels,
         )
         plt.tight_layout()
         path = os.path.join(output_dir, f"{plot_idx:02d}_cuda_total{cache_suffix}.png")
+        plt.savefig(path, dpi=150, bbox_inches="tight")
+        plt.close()
+        print(f"  Saved {path}")
+        plot_idx += 1
+
+        # ─── CUDA stats: packet/seek counts ───
+        fig = plt.figure(figsize=(14, 5))
+        _make_stats_pair(fig, cuda_all, cuda_step, labels, step, is_cuda=True)
+        fig.suptitle(
+            f"CUDA (beta) Decode: Packet & Seek Counts {gop_info}{cache_info} — {gpu_name}",
+            fontsize=14, fontweight="bold",
+        )
+        plt.tight_layout()
+        path = os.path.join(output_dir, f"{plot_idx:02d}_cuda_stats{cache_suffix}.png")
         plt.savefig(path, dpi=150, bbox_inches="tight")
         plt.close()
         print(f"  Saved {path}")

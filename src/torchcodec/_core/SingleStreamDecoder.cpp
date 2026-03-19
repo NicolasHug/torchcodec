@@ -1270,7 +1270,6 @@ bool SingleStreamDecoder::canWeAvoidSeeking() const {
 // AVFormatContext if it is needed. We can skip seeking in certain cases. See
 // the comment of canWeAvoidSeeking() for details.
 void SingleStreamDecoder::maybeSeekToBeforeDesiredPts() {
-  BENCHMARK_TIMER("seek");
   validateActiveStream();
   StreamInfo& streamInfo = streamInfos_[activeStreamIndex_];
 
@@ -1279,6 +1278,8 @@ void SingleStreamDecoder::maybeSeekToBeforeDesiredPts() {
     decodeStats_.numSeeksSkipped++;
     return;
   }
+
+  BENCHMARK_TIMER("seek");
 
   int64_t desiredPts = cursor_;
 
