@@ -305,6 +305,9 @@ torch::stable::Tensor convertNV12FrameToRGB(
   {
     ScopedBenchmarkTimer syncTimer("stream_sync");
     syncStreams(/*runningStream=*/nvdecStream, /*waitingStream=*/nppStream);
+    if (isBenchmarkEnabled()) {
+      cudaStreamSynchronize(nppStream);
+    }
   }
 
   nppCtx->hStream = nppStream;
