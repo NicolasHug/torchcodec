@@ -1,6 +1,5 @@
 build/
 benchmarks/test_videos/
-benchmarks/benchmark_plots/
 dist/
 src/TorchCodec.egg-info/
 */**/__pycache__
