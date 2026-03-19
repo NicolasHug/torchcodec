@@ -1,126 +1,194 @@
-# TorchCodec Decoding Pipeline Analysis
+# Decoding Pipeline Analysis
 
-## CPU Decoding Pipeline
+Benchmark results from instrumenting the torchcodec decoding pipeline on CPU and
+CUDA (beta backend). All results below are for **720p libx264 testsrc videos,
+GOP=50, 30fps**, on an **NVIDIA GeForce RTX 4080 Laptop GPU**.
 
-### Pipeline Stages
+## Instrumentation Setup
 
-| Stage | What it does | Code location | Hardware |
-|---|---|---|---|
-| `seek` | `avformat_seek_file()` + codec flush | `SingleStreamDecoder.cpp:1272` | CPU |
-| `demux` | `av_read_frame()` — reads compressed packet from container | `SingleStreamDecoder.cpp:1371-1372` | CPU |
-| `send_packet` | `avcodec_send_packet()` — **software H.264/H.265 decode** | `SingleStreamDecoder.cpp:1403-1404` | CPU |
-| `receive_frame` | `avcodec_receive_frame()` — retrieves decoded YUV frame | `SingleStreamDecoder.cpp:1338-1339` | CPU |
-| `convert_avframe` | YUV→RGB color conversion via swscale or filtergraph | `SingleStreamDecoder.cpp:1455-1457` | CPU |
-| `permute` | HWC→CHW tensor permutation | `SingleStreamDecoder.cpp:1471` | CPU |
+RAII-based `ScopedBenchmarkTimer` with a global `std::atomic<bool>` toggle.
+Negligible overhead when disabled. Wall-clock timing via
+`std::chrono::high_resolution_clock`. For CUDA, `cudaStreamSynchronize` is added
+around NPP color conversion and stream sync to measure actual GPU time (otherwise
+the non-blocking API calls would only measure launch overhead).
 
-### Time Breakdown
+### Timer accuracy notes
 
-For testsrc-generated H.264 videos (720p and 1080p, 30fps):
-
-- **~50%** in `send_packet` (software decode)
-- **~50%** in `convert_avframe` (color conversion)
-- `demux`, `seek`, `permute` are negligible
-
-### Parallelism Opportunity: 2-Stage Pipeline
-
-The two dominant stages (software decode and color conversion) are both CPU-bound
-but independent for different frames. This enables **pipeline parallelism**:
-
-```
-Sequential:
-  [decode F1][convert F1][decode F2][convert F2][decode F3][convert F3]
-
-Pipelined (2 threads):
-  Main thread:    [decode F1][decode F2 ][decode F3 ]
-  Worker thread:            [convert F1][convert F2][convert F3]
-```
-
-**Implementation** (see commit `f4460b1`):
-- A dedicated worker thread in `CpuDeviceInterface` runs a `colorConversionWorker()` loop
-- `SingleStreamDecoder::getFramesAtIndices()` enqueues decoded AVFrames for async
-  color conversion, then dequeues the previous frame's result while decoding the next
-- Backpressure via `kMaxQueueDepth = 2` prevents unbounded memory growth
-- With a balanced 50/50 split, this achieves close to **2x throughput**
+| Timer | Accurate? | Why |
+|---|---|---|
+| demux, BSF, seek | Yes | Pure CPU work |
+| decode (CPU) | Yes | `avcodec_send_packet` — CPU software decode (includes parsing) |
+| YUV -> RGB (CPU) | Yes | swscale YUV→RGB — CPU work |
+| map_frame (CUDA) | Yes | `cuvidMapVideoFrame` blocks until NVDEC finishes |
+| YUV -> RGB (CUDA) | Yes | Includes tensor alloc + stream sync + NPP color conversion; `cudaStreamSynchronize` added when benchmarking |
+| packet_parse_and_decode (CUDA) | Yes* | `cuvidParseVideoData` is CPU-side parsing; includes `nvdec_decode` callback but that's just non-blocking launch overhead |
+| nvdec_decode (CUDA) | **No** | `cuvidDecodePicture` is non-blocking; real cost shows up in map_frame. **Excluded from plots** (nested inside packet_parse_and_decode) |
+| decode (CUDA) | N/A | Parent timer wrapping BSF + packet_parse_and_decode. **Excluded from plots** to avoid double-counting |
+| permute | N/A | `aten::permute` is a view (no kernel), timing is accurate but trivial |
 
 ---
 
-## CUDA (Beta) Decoding Pipeline
+## CPU Pipeline
 
-### Pipeline Stages
-
-| Stage | What it does | Code location | Hardware unit |
-|---|---|---|---|
-| `seek` | `avformat_seek_file()` + codec flush | `SingleStreamDecoder.cpp:1272` | CPU |
-| `demux` | `av_read_frame()` — reads compressed packet | `SingleStreamDecoder.cpp:1371-1372` | CPU |
-| `bitstream_filter` | Annex-B ↔ AVCC conversion via FFmpeg BSF | `BetaCudaDeviceInterface.cpp:496-498` | CPU |
-| `packet_parse_and_decode` | `cuvidParseVideoData()` — submits packet to NVDEC parser | `BetaCudaDeviceInterface.cpp:507-508` | CPU → NVDEC |
-| `nvdec_decode` | `cuvidDecodePicture()` — **non-blocking** NVDEC HW decode | `BetaCudaDeviceInterface.cpp:564-565` | NVDEC (fixed-function HW) |
-| `map_frame` | `cuvidMapVideoFrame()` — **blocks** until decode completes | `BetaCudaDeviceInterface.cpp:624-625` | NVDEC → GPU memory |
-| `unmap_frame` | `cuvidUnmapVideoFrame()` — releases output surface | `BetaCudaDeviceInterface.cpp:647-648` | GPU |
-| `tensor_alloc` | Allocates empty HWC CUDA tensor | `CUDACommon.cpp` | CPU + GPU |
-| `stream_sync` | Synchronizes NVDEC stream with NPP stream | `CUDACommon.cpp` | GPU |
-| `color_conversion` | NPP NV12→RGB kernel | `CUDACommon.cpp` | CUDA cores |
-| `permute` | HWC→CHW tensor permutation | `SingleStreamDecoder.cpp:1471` | CUDA cores |
-
-### Current Execution Model
-
-Everything is **serial**. For each frame:
+### Stages
 
 ```
-CPU:          [demux][BSF][parse+submit]...........[next demux]...
-NVDEC:                         [decode]
-                                       ↓ map_frame blocks CPU
-CUDA cores:                                       [color convert][permute]
+av_read_frame (demux)
+    → avcodec_send_packet (decode) — software H.264 decode
+    → avcodec_receive_frame
+    → swscale/filtergraph (YUV -> RGB) — color conversion
+    → permute (view op, ~free)
 ```
 
-The CPU sits idle while waiting for `cuvidMapVideoFrame` to return, and NVDEC sits
-idle while the CPU demuxes and while CUDA cores do color conversion.
+### All frames (900 frames, ~827 fps)
 
-### Parallelism Opportunity: 3-Stage Pipeline
+| Stage | ms/frame | % of total |
+|---|---|---|
+| decode | 0.52 | 48% |
+| YUV -> RGB | 0.56 | 52% |
+| demux, seek, permute | <0.01 | <1% |
 
-Three **independent hardware units** can run simultaneously:
+Nearly a perfect **50/50 split** between software decode and color conversion.
+Both are CPU-bound. Demux and permute are negligible.
 
-1. **CPU** — demux + BSF + `cuvidParseVideoData` (packet parsing and submission)
-2. **NVDEC** — fixed-function hardware decoder (separate silicon from CUDA cores)
-3. **CUDA cores** — NPP color conversion + permute
+### Every 50th frame (18 frames, ~294 fps)
 
-The ideal pipeline overlaps all three:
+| Stage | ms/frame | % of total |
+|---|---|---|
+| decode | 2.40 | 70% |
+| YUV -> RGB | 1.01 | 29% |
+| demux, seek | 0.04 | ~1% |
+
+Decode now dominates at **70%**. Two reasons:
+
+1. **I-frames are expensive.** Each requested frame lands on (or near) a
+   keyframe. I-frames are fully intra-coded — no motion compensation shortcuts —
+   so they cost much more to decode than P/B frames.
+2. **Extra packets decoded per seek.** Despite GOP=50 matching the step size,
+   the decoder still processes ~3 packets per requested frame (54 packets / 18
+   frames). Seeks don't always land exactly on the keyframe; a few extra frames
+   must be decoded and discarded.
+
+YUV -> RGB jumps from 0.56 to 1.01 ms/frame (1.8x) — possibly due to the
+`get_frames_at` → `getFramesAtIndices` batch code path or cache effects from the
+non-sequential access pattern.
+
+### CPU optimization opportunities
+
+- **All frames:** Pipeline parallelism — decode frame N+1 on one thread while
+  color-converting frame N on another. With a balanced 50/50 split, this gives
+  close to **2x throughput**. See commit `f4460b1` for a working implementation.
+- **1/N frames:** Decode dominates so pipelining helps less (~1.4x max).
+  The main win is reducing wasted decode work: ensure seeks land precisely on
+  keyframes, or use videos with GOP matching the sampling stride.
+
+---
+
+## CUDA (Beta) Pipeline
+
+### Stages
 
 ```
-CPU:         [demux+parse F1][demux+parse F2][demux+parse F3][demux+parse F4]...
-NVDEC:                       [decode F1     ][decode F2     ][decode F3     ]...
-CUDA cores:                                  [color cvt F1  ][color cvt F2  ]...
+av_read_frame (demux) — CPU
+    → applyBSF (bitstream_filter) — CPU
+    → cuvidParseVideoData (packet_parse_and_decode) — CPU, triggers callbacks
+        → cuvidDecodePicture (nvdec_decode) — non-blocking GPU submit
+    → cuvidMapVideoFrame (map_frame) — BLOCKS until NVDEC done
+    → YUV -> RGB — tensor alloc + stream sync + NPP NV12→RGB on CUDA cores
+    → permute (view op, ~free)
 ```
 
-### Implementation Approach
+Three independent hardware units:
+1. **CPU** — demux, BSF, packet parsing
+2. **NVDEC** — fixed-function hardware decoder (separate from CUDA cores)
+3. **CUDA cores** — NPP color conversion
 
-1. **Decouple packet submission from frame retrieval**: Submit multiple packets via
-   `cuvidParseVideoData` without immediately calling `cuvidMapVideoFrame`. This keeps
-   NVDEC busy while the CPU continues demuxing.
+### Timer hierarchy (important for interpreting results)
 
-2. **Defer `cuvidMapVideoFrame`**: Instead of blocking on map right after decode, map
-   frame N only when you need its data — by then, NVDEC may have already finished.
+The C++ timers nest as follows:
 
-3. **Overlap color conversion with NVDEC decode**: While CUDA cores run NPP on
-   frame N, NVDEC can be decoding frame N+1. These use different hardware units and
-   don't contend.
+```
+"decode" (parent — SingleStreamDecoder.cpp, wraps sendPacket())
+  ├── "bitstream_filter"  (leaf)
+  └── "packet_parse_and_decode" (cuvidParseVideoData, includes callback)
+        └── "nvdec_decode" (cuvidDecodePicture callback — non-blocking)
+```
 
-4. **Backpressure**: NVDEC has a fixed number of output surfaces (the DPB — Decoded
-   Picture Buffer). The queue depth is bounded by the number of surfaces available.
-   Submitting too many packets without mapping/unmapping will cause `cuvidMapVideoFrame`
-   to fail.
+`decode` double-counts `bitstream_filter` + `packet_parse_and_decode`.
+`packet_parse_and_decode` includes `nvdec_decode` (triggered as a synchronous
+callback inside `cuvidParseVideoData`). Since `cuvidDecodePicture` is
+non-blocking (just launch overhead, ~microseconds), `packet_parse_and_decode`
+effectively measures **CPU-side bitstream parsing**.
 
-### Key Constraint: Output Surface Management
+For plots, the leaf categories used are: `bitstream_filter`,
+`packet_parse_and_decode` (labeled "parsing"), `map_frame`,
+`YUV -> RGB`, etc. Parent timers (`decode`, `nvdec_decode`) are excluded to
+avoid double-counting.
 
-Currently, `unmapPreviousFrame()` is called just before `cuvidMapVideoFrame()` for
-the next frame (see `BetaCudaDeviceInterface.cpp:621`). This keeps at most one frame
-mapped at a time. A pipelined approach would need to manage multiple mapped frames,
-unmapping only after color conversion completes.
+### All frames (900 frames, ~1620 fps)
 
-### Expected Speedup
+| Stage | ms/frame | % of leaf total |
+|---|---|---|
+| map_frame (NVDEC wait) | 0.534 | **86%** |
+| YUV -> RGB | 0.062 | 10% |
+| parsing | 0.012 | 2% |
+| permute | 0.006 | 1% |
+| demux | 0.005 | <1% |
+| bitstream_filter, seek, unmap | <0.001 each | <1% |
 
-With 3 pipeline stages on 3 hardware units, the theoretical max is **3x** (if all
-stages take equal time). In practice, speedup is bounded by the slowest stage.
-The dominant stages are typically `map_frame` (blocking NVDEC wait) and
-`color_conversion` (NPP), so a realistic target is **1.5-2.5x** depending on
-resolution and codec complexity.
+**map_frame utterly dominates at 86%.** This is the blocking call that waits for
+NVDEC to finish decoding. YUV -> RGB (including tensor alloc, stream sync, and
+NPP color conversion) is only ~10%. The NVDEC hardware decoder is the bottleneck.
+
+### Every 50th frame (18 frames, ~383 fps)
+
+| Stage | ms/frame | % of leaf total |
+|---|---|---|
+| parsing | 1.509 | **58%** |
+| map_frame (NVDEC wait) | 0.918 | 35% |
+| YUV -> RGB | 0.060 | 2% |
+| seek | 0.056 | 2% |
+| demux | 0.058 | 2% |
+| bitstream_filter, permute, unmap | <0.01 each | <1% |
+
+The picture completely changes. **Parsing dominates at 58%.** The decoder
+processes 86 packets for 18 requested frames (~4.8 packets per frame). NVDEC
+must decode all intermediate frames between seeks even though only 18 are
+needed, and `cuvidParseVideoData` runs on CPU for every one of those 86 packets.
+
+`map_frame` drops from 86% to 35% — still significant (the per-frame NVDEC
+blocking wait), but now the CPU-side parsing is the bigger cost.
+
+### CUDA optimization opportunities
+
+- **All frames:** Pipeline parallelism across 3 hardware units:
+  - CPU thread: demux + BSF + `cuvidParseVideoData` (keep feeding packets)
+  - NVDEC hardware: decoding frames asynchronously
+  - CUDA cores: NPP color conversion on previously-decoded frames
+
+  Submit multiple packets before calling `cuvidMapVideoFrame`, so NVDEC stays
+  busy while CPU demuxes and CUDA cores color-convert. Theoretical max ~3x if
+  all stages are balanced, but NVDEC at 86% is the hard ceiling — realistically
+  expect to hide the remaining 14% for a modest ~1.2x gain.
+
+- **1/N frames:** Reduce wasted decode work. With 4.8 packets per requested
+  frame, most of the time is spent parsing and decoding frames that are
+  discarded. Options:
+  - Ensure keyframe intervals match the sampling stride
+  - Improve seek precision to land exactly on keyframes
+  - Consider a seek mode that skips unnecessary intermediate frames
+
+---
+
+## All vs Sampled: Summary
+
+|  | CPU all | CPU 1/50 | CUDA all | CUDA 1/50 |
+|---|---|---|---|---|
+| FPS | ~827 | ~294 | ~1620 | ~383 |
+| ms/frame | 1.21 | 3.40 | 0.62 | 2.61 |
+| Bottleneck | decode 48%, YUV->RGB 52% | decode 70% | NVDEC (map_frame) 86% | parsing 58%, map_frame 35% |
+| Best optimization | Pipeline decode ‖ YUV->RGB | Reduce extra packets | Pipeline CPU ‖ NVDEC ‖ CUDA | Reduce extra packets |
+
+Note: previous CUDA FPS numbers (~807 all, ~149 sampled) were inflated by
+double-counting parent timers. The corrected leaf-only totals show CUDA is
+actually ~2x faster than CPU for sequential decoding.

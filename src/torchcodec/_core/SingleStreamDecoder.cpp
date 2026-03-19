@@ -1400,7 +1400,7 @@ UniqueAVFrame SingleStreamDecoder::decodeAVFrame(
     // We got a valid packet. Send it to the decoder, and we'll receive it in
     // the next iteration.
     {
-      ScopedBenchmarkTimer sendTimer("send_packet");
+      ScopedBenchmarkTimer sendTimer("decode");
       status = deviceInterface_->sendPacket(packet);
     }
     STD_TORCH_CHECK(

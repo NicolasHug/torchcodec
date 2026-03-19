@@ -277,6 +277,7 @@ BetaCudaDeviceInterface::BetaCudaDeviceInterface(const StableDevice& device)
 }
 
 BetaCudaDeviceInterface::~BetaCudaDeviceInterface() {
+  ScopedBenchmarkTimer destroyTimer("decoder_destruction");
   if (decoder_) {
     // DALI doesn't seem to do any particular cleanup of the decoder before
     // sending it to the cache, so we probably don't need to do anything either.
@@ -285,11 +286,8 @@ BetaCudaDeviceInterface::~BetaCudaDeviceInterface() {
     // unclear.
     flush();
     unmapPreviousFrame();
-    {
-      ScopedBenchmarkTimer cacheTimer("cache_return");
-      NVDECCache::getCache(device_).returnDecoder(
-          &videoFormat_, std::move(decoder_));
-    }
+    NVDECCache::getCache(device_).returnDecoder(
+        &videoFormat_, std::move(decoder_));
   }
 
   if (videoParser_) {
