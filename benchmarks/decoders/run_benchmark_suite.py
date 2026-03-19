@@ -154,102 +154,58 @@ def run_one(video_path, device, use_beta=False, sampling="all", step=50,
     return averaged, num_frames_decoded
 
 
-def _make_stacked_bar_trio(
+def _make_stacked_bar_pair(
     fig, all_results, step_results, labels, leaf_categories, cmap, step,
     value_fn, title, ylabel,
 ):
-    """Draw 3 subplots: left = all+step side-by-side, top-right = all only, bottom-right = step only (own scale).
+    """Draw 2 side-by-side subplots: left = all frames, right = every Nth frame (own scale).
 
     leaf_categories: dict mapping cpp_timer_name -> display_name
     """
     import numpy as np
-    from matplotlib.gridspec import GridSpec
 
-    gs = GridSpec(2, 2, figure=fig, width_ratios=[1.2, 1], hspace=0.35, wspace=0.3)
-    ax_main = fig.add_subplot(gs[:, 0])
-    ax_all = fig.add_subplot(gs[0, 1])
-    ax_step = fig.add_subplot(gs[1, 1])
+    ax_all, ax_step = fig.subplots(1, 2)
 
     cat_items = list(leaf_categories.items())
     x = np.arange(len(labels))
-    w = 0.35
 
-    # --- Main plot: side-by-side ---
-    bottoms_all = np.zeros(len(labels))
-    for ci, (cpp_name, display_name) in enumerate(cat_items):
-        vals = []
-        for l in labels:
-            r, nf = all_results[l]
-            total_ms = r[cpp_name][0] if cpp_name in r else 0
-            vals.append(value_fn(total_ms, nf))
-        vals = np.array(vals)
-        ax_main.bar(
-            x - w / 2, vals, w, bottom=bottoms_all,
-            label=display_name, color=cmap[ci], edgecolor="white", linewidth=0.5,
-        )
-        bottoms_all += vals
-
-    bottoms_step = np.zeros(len(labels))
-    for ci, (cpp_name, display_name) in enumerate(cat_items):
-        vals = []
-        for l in labels:
-            r, nf = step_results[l]
-            total_ms = r[cpp_name][0] if cpp_name in r else 0
-            vals.append(value_fn(total_ms, nf))
-        vals = np.array(vals)
-        ax_main.bar(
-            x + w / 2, vals, w, bottom=bottoms_step,
-            color=cmap[ci], edgecolor="white", linewidth=0.5,
-            hatch="//", alpha=0.85,
-        )
-        bottoms_step += vals
-
-    for i in range(len(labels)):
-        ax_main.text(x[i] - w / 2, bottoms_all[i] + bottoms_all.max() * 0.01,
-                     "all", ha="center", va="bottom", fontsize=7, fontstyle="italic")
-        ax_main.text(x[i] + w / 2, bottoms_step[i] + bottoms_all.max() * 0.01,
-                     f"1/{step}", ha="center", va="bottom", fontsize=7, fontstyle="italic")
-
-    ax_main.set_xticks(x)
-    ax_main.set_xticklabels(labels, rotation=30, ha="right")
-    ax_main.set_ylabel(ylabel)
-    ax_main.set_title("All vs Sampled", fontsize=11, fontweight="bold")
-    ax_main.legend(loc="upper left", fontsize=7, ncol=1)
-
-    # --- Top-right: all only ---
+    # --- Left: all frames ---
     bottoms = np.zeros(len(labels))
-    for ci, (cpp_name, _) in enumerate(cat_items):
+    for ci, (cpp_name, display_name) in enumerate(cat_items):
         vals = []
         for l in labels:
             r, nf = all_results[l]
             total_ms = r[cpp_name][0] if cpp_name in r else 0
             vals.append(value_fn(total_ms, nf))
         vals = np.array(vals)
-        ax_all.bar(x, vals, 0.6, bottom=bottoms, color=cmap[ci], edgecolor="white", linewidth=0.5)
+        ax_all.bar(x, vals, 0.6, bottom=bottoms, label=display_name,
+                   color=cmap[ci], edgecolor="white", linewidth=0.5)
         bottoms += vals
 
     ax_all.set_xticks(x)
-    ax_all.set_xticklabels(labels, rotation=30, ha="right", fontsize=8)
-    ax_all.set_ylabel(ylabel, fontsize=9)
+    ax_all.set_xticklabels(labels, rotation=30, ha="right")
+    ax_all.set_ylabel(ylabel)
     ax_all.set_title("All frames", fontsize=11, fontweight="bold")
+    ax_all.legend(loc="upper left", fontsize=7, ncol=1)
 
-    # --- Bottom-right: step only (own scale) ---
+    # --- Right: every Nth frame (own scale) ---
     bottoms = np.zeros(len(labels))
-    for ci, (cpp_name, _) in enumerate(cat_items):
+    for ci, (cpp_name, display_name) in enumerate(cat_items):
         vals = []
         for l in labels:
             r, nf = step_results[l]
             total_ms = r[cpp_name][0] if cpp_name in r else 0
             vals.append(value_fn(total_ms, nf))
         vals = np.array(vals)
-        ax_step.bar(x, vals, 0.6, bottom=bottoms, color=cmap[ci], edgecolor="white", linewidth=0.5,
-                    hatch="//", alpha=0.85)
+        ax_step.bar(x, vals, 0.6, bottom=bottoms, label=display_name,
+                    color=cmap[ci], edgecolor="white", linewidth=0.5)
         bottoms += vals
 
     ax_step.set_xticks(x)
-    ax_step.set_xticklabels(labels, rotation=30, ha="right", fontsize=8)
-    ax_step.set_ylabel(ylabel, fontsize=9)
-    ax_step.set_title(f"Every {step} frames", fontsize=11, fontweight="bold")
+    ax_step.set_xticklabels(labels, rotation=30, ha="right")
+    ax_step.set_ylabel(ylabel)
+    ax_step.set_title(f"Every {step}th frame", fontsize=11, fontweight="bold")
+    ax_step.legend(loc="upper left", fontsize=7, ncol=1)
 
     fig.suptitle(title, fontsize=14, fontweight="bold")
 
@@ -284,7 +240,7 @@ def make_plots(cpu_all, cpu_step, cuda_all, cuda_step, output_dir, step, labels,
         cpu_cmap = plt.cm.Set2(np.linspace(0, 1, len(CPU_LEAF_CATEGORIES)))
 
         fig = plt.figure(figsize=(18, 6))
-        _make_stacked_bar_trio(
+        _make_stacked_bar_pair(
             fig, cpu_all, cpu_step, labels, CPU_LEAF_CATEGORIES, cpu_cmap, step,
             per_frame, f"CPU Decode: Per-frame Time Breakdown {gop_info}", "Time per frame (ms)",
         )
@@ -297,7 +253,7 @@ def make_plots(cpu_all, cpu_step, cuda_all, cuda_step, output_dir, step, labels,
 
         # ─── CPU breakdown: total time ───
         fig = plt.figure(figsize=(18, 6))
-        _make_stacked_bar_trio(
+        _make_stacked_bar_pair(
             fig, cpu_all, cpu_step, labels, CPU_LEAF_CATEGORIES, cpu_cmap, step,
             total_time, f"CPU Decode: Total Time Breakdown {gop_info}", "Total time (ms)",
         )
@@ -313,7 +269,7 @@ def make_plots(cpu_all, cpu_step, cuda_all, cuda_step, output_dir, step, labels,
         cuda_cmap = plt.cm.tab20(np.linspace(0, 1, len(CUDA_LEAF_CATEGORIES)))
 
         fig = plt.figure(figsize=(18, 7))
-        _make_stacked_bar_trio(
+        _make_stacked_bar_pair(
             fig, cuda_all, cuda_step, labels, CUDA_LEAF_CATEGORIES, cuda_cmap, step,
             per_frame, f"CUDA (beta) Decode: Per-frame Time {gop_info}{cache_info} — {gpu_name}",
             "Time per frame (ms)",
@@ -327,7 +283,7 @@ def make_plots(cpu_all, cpu_step, cuda_all, cuda_step, output_dir, step, labels,
 
         # ─── CUDA breakdown: total time ───
         fig = plt.figure(figsize=(18, 7))
-        _make_stacked_bar_trio(
+        _make_stacked_bar_pair(
             fig, cuda_all, cuda_step, labels, CUDA_LEAF_CATEGORIES, cuda_cmap, step,
             total_time, f"CUDA (beta) Decode: Total Time {gop_info}{cache_info} — {gpu_name}",
             "Total time (ms)",
