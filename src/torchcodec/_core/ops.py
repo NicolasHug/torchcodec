@@ -590,3 +590,18 @@ def get_nvdec_cache_capacity_abstract() -> int:
 @register_fake("torchcodec_ns::_get_nvdec_cache_size")
 def _get_nvdec_cache_size_abstract(device_index: int) -> int:
     return 0
+
+
+def enable_benchmark(enabled: bool) -> None:
+    assert _pybind_ops is not None
+    _pybind_ops.enable_benchmark(enabled)
+
+
+def get_benchmark_results() -> dict[str, tuple[float, int]]:
+    assert _pybind_ops is not None
+    return _pybind_ops.get_benchmark_results()
+
+
+def reset_benchmark() -> None:
+    assert _pybind_ops is not None
+    _pybind_ops.reset_benchmark()

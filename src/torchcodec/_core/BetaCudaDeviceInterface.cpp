@@ -11,6 +11,7 @@
 
 #include "BetaCudaDeviceInterface.h"
 
+#include "Benchmark.h"
 #include "DeviceInterface.h"
 #include "FFMPEGCommon.h"
 #include "NVDECCache.h"
@@ -284,8 +285,11 @@ BetaCudaDeviceInterface::~BetaCudaDeviceInterface() {
     // unclear.
     flush();
     unmapPreviousFrame();
-    NVDECCache::getCache(device_).returnDecoder(
-        &videoFormat_, std::move(decoder_));
+    {
+      ScopedBenchmarkTimer cacheTimer("cache_return");
+      NVDECCache::getCache(device_).returnDecoder(
+          &videoFormat_, std::move(decoder_));
+    }
   }
 
   if (videoParser_) {
@@ -448,12 +452,16 @@ int BetaCudaDeviceInterface::streamPropertyChange(CUVIDEOFORMAT* videoFormat) {
   }
 
   if (!decoder_) {
-    decoder_ = NVDECCache::getCache(device_).getDecoder(videoFormat);
+    {
+      ScopedBenchmarkTimer cacheTimer("cache_get");
+      decoder_ = NVDECCache::getCache(device_).getDecoder(videoFormat);
+    }
 
     if (!decoder_) {
       // TODONVDEC P2: consider re-configuring an existing decoder instead of
       // re-creating one. See docs, see DALI. Re-configuration doesn't seem to
       // be enabled in DALI by default.
+      ScopedBenchmarkTimer createTimer("decoder_creation");
       decoder_ = createDecoder(videoFormat);
     }
 
@@ -484,7 +492,10 @@ int BetaCudaDeviceInterface::sendPacket(ReferenceAVPacket& packet) {
   // reference.
   AutoAVPacket filteredAutoPacket;
   ReferenceAVPacket filteredPacket(filteredAutoPacket);
-  ReferenceAVPacket& packetToSend = applyBSF(packet, filteredPacket);
+  ReferenceAVPacket& packetToSend = [&]() -> ReferenceAVPacket& {
+    ScopedBenchmarkTimer bsfTimer("bitstream_filter");
+    return applyBSF(packet, filteredPacket);
+  }();
 
   CUVIDSOURCEDATAPACKET cuvidPacket = {};
   cuvidPacket.payload = packetToSend->data;
@@ -492,7 +503,10 @@ int BetaCudaDeviceInterface::sendPacket(ReferenceAVPacket& packet) {
   cuvidPacket.flags = CUVID_PKT_TIMESTAMP;
   cuvidPacket.timestamp = packetToSend->pts;
 
-  return sendCuvidPacket(cuvidPacket);
+  {
+    ScopedBenchmarkTimer parseTimer("packet_parse_and_decode");
+    return sendCuvidPacket(cuvidPacket);
+  }
 }
 
 int BetaCudaDeviceInterface::sendEOFPacket() {
@@ -547,6 +561,7 @@ int BetaCudaDeviceInterface::frameReadyForDecoding(CUVIDPICPARAMS* picParams) {
   STD_TORCH_CHECK(picParams != nullptr, "Invalid picture parameters");
   STD_TORCH_CHECK(decoder_, "Decoder not initialized before picture decode");
   // Send frame to be decoded by NVDEC - non-blocking call.
+  ScopedBenchmarkTimer decodeTimer("nvdec_decode");
   CUresult result = cuvidDecodePicture(*decoder_.get(), picParams);
 
   // Yes, you're reading that right, 0 means error, 1 means success
@@ -604,8 +619,16 @@ int BetaCudaDeviceInterface::receiveFrame(UniqueAVFrame& avFrame) {
   // SingleStreamDecoder. Either way, the underlying output surface can be
   // safely re-used.
   unmapPreviousFrame();
-  CUresult result = cuvidMapVideoFrame(
-      *decoder_.get(), dispInfo.picture_index, &framePtr, &pitch, &procParams);
+  CUresult result;
+  {
+    ScopedBenchmarkTimer mapTimer("map_frame");
+    result = cuvidMapVideoFrame(
+        *decoder_.get(),
+        dispInfo.picture_index,
+        &framePtr,
+        &pitch,
+        &procParams);
+  }
   if (result != CUDA_SUCCESS) {
     return AVERROR_EXTERNAL;
   }
@@ -620,6 +643,7 @@ void BetaCudaDeviceInterface::unmapPreviousFrame() {
   if (previouslyMappedFrame_ == 0) {
     return;
   }
+  ScopedBenchmarkTimer unmapTimer("unmap_frame");
   CUresult result =
       cuvidUnmapVideoFrame(*decoder_.get(), previouslyMappedFrame_);
   STD_TORCH_CHECK(

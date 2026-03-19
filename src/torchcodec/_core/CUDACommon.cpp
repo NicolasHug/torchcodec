@@ -6,6 +6,7 @@
 
 #include "CUDACommon.h"
 #include <torch/csrc/inductor/aoti_torch/c/shim.h>
+#include "Benchmark.h"
 #include "Cache.h" // for PerGpuCache
 #include "StableABICompat.h"
 #include "ValidationUtils.h"
@@ -293,6 +294,7 @@ torch::stable::Tensor convertNV12FrameToRGB(
   if (preAllocatedOutputTensor.has_value()) {
     dst = preAllocatedOutputTensor.value();
   } else {
+    ScopedBenchmarkTimer allocTimer("tensor_alloc");
     dst = allocateEmptyHWCTensor(frameDims, device);
   }
 
@@ -300,7 +302,10 @@ torch::stable::Tensor convertNV12FrameToRGB(
   // color-converting it with NPP.
   // So we make the NPP stream wait for NVDEC to finish.
   cudaStream_t nppStream = getCurrentCudaStream(device.index());
-  syncStreams(/*runningStream=*/nvdecStream, /*waitingStream=*/nppStream);
+  {
+    ScopedBenchmarkTimer syncTimer("stream_sync");
+    syncStreams(/*runningStream=*/nvdecStream, /*waitingStream=*/nppStream);
+  }
 
   nppCtx->hStream = nppStream;
   cudaError_t err = cudaStreamGetFlags(nppCtx->hStream, &nppCtx->nStreamFlags);
@@ -314,9 +319,12 @@ torch::stable::Tensor convertNV12FrameToRGB(
 
   NppStatus status;
 
-  // For background, see
-  // Note [YUV -> RGB Color Conversion, color space and color range]
-  if (avFrame->colorspace == AVColorSpace::AVCOL_SPC_BT709) {
+  {
+    ScopedBenchmarkTimer colorTimer("color_conversion");
+
+    // For background, see
+    // Note [YUV -> RGB Color Conversion, color space and color range]
+    if (avFrame->colorspace == AVColorSpace::AVCOL_SPC_BT709) {
     if (avFrame->color_range == AVColorRange::AVCOL_RANGE_JPEG) {
       // NPP provides a pre-defined color conversion function for BT.709 full
       // range: nppiNV12ToRGB_709HDTV_8u_P2C3R_Ctx. But it's not closely
@@ -402,6 +410,13 @@ torch::stable::Tensor convertNV12FrameToRGB(
           *nppCtx);
     }
   }
+
+    // When benchmarking, synchronize to measure actual GPU kernel time
+    if (isBenchmarkEnabled()) {
+      cudaStreamSynchronize(nppStream);
+    }
+  } // end color_conversion timer
+
   STD_TORCH_CHECK(status == NPP_SUCCESS, "Failed to convert NV12 frame.");
 
   return dst;

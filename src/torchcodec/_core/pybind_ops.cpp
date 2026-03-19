@@ -9,6 +9,7 @@
 #include <cstdint>
 
 #include "AVIOFileLikeContext.h"
+#include "Benchmark.h"
 
 namespace py = pybind11;
 
@@ -45,6 +46,19 @@ int64_t create_file_like_context(py::object file_like, bool is_for_writing) {
 
 PYBIND11_MODULE(PYBIND_OPS_MODULE_NAME, m) {
   m.def("create_file_like_context", &create_file_like_context);
+  m.def("enable_benchmark", &setBenchmarkEnabled);
+  m.def(
+      "get_benchmark_results",
+      []() {
+        auto results = getBenchmarkData().getResults();
+        py::dict pyResults;
+        for (const auto& [name, entry] : results) {
+          pyResults[py::cast(name)] =
+              py::make_tuple(entry.totalTimeMs, entry.count);
+        }
+        return pyResults;
+      });
+  m.def("reset_benchmark", []() { getBenchmarkData().reset(); });
 }
 
 } // namespace facebook::torchcodec

@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <iostream>
 #include <string_view>
+#include "Benchmark.h"
 #include "Metadata.h"
 #include "StableABICompat.h"
 
@@ -1269,6 +1270,7 @@ bool SingleStreamDecoder::canWeAvoidSeeking() const {
 // AVFormatContext if it is needed. We can skip seeking in certain cases. See
 // the comment of canWeAvoidSeeking() for details.
 void SingleStreamDecoder::maybeSeekToBeforeDesiredPts() {
+  BENCHMARK_TIMER("seek");
   validateActiveStream();
   StreamInfo& streamInfo = streamInfos_[activeStreamIndex_];
 
@@ -1332,7 +1334,10 @@ UniqueAVFrame SingleStreamDecoder::decodeAVFrame(
   // avcodec_send_packet, while specialized interfaces can override for
   // hardware-specific optimizations.
   while (true) {
-    status = deviceInterface_->receiveFrame(avFrame);
+    {
+      ScopedBenchmarkTimer recvTimer("receive_frame");
+      status = deviceInterface_->receiveFrame(avFrame);
+    }
 
     if (status != AVSUCCESS && status != AVERROR(EAGAIN)) {
       // Non-retriable error
@@ -1363,6 +1368,7 @@ UniqueAVFrame SingleStreamDecoder::decodeAVFrame(
     // packets and send them to the decoder.
     ReferenceAVPacket packet(autoAVPacket);
     do {
+      ScopedBenchmarkTimer demuxTimer("demux");
       status = av_read_frame(formatContext_.get(), packet.get());
       decodeStats_.numPacketsRead++;
 
@@ -1393,7 +1399,10 @@ UniqueAVFrame SingleStreamDecoder::decodeAVFrame(
 
     // We got a valid packet. Send it to the decoder, and we'll receive it in
     // the next iteration.
-    status = deviceInterface_->sendPacket(packet);
+    {
+      ScopedBenchmarkTimer sendTimer("send_packet");
+      status = deviceInterface_->sendPacket(packet);
+    }
     STD_TORCH_CHECK(
         status >= AVSUCCESS,
         "Could not push packet to decoder: ",
@@ -1442,8 +1451,11 @@ FrameOutput SingleStreamDecoder::convertAVFrameToFrameOutput(
   frameOutput.durationSeconds = ptsToSeconds(
       getDuration(avFrame),
       formatContext_->streams[activeStreamIndex_]->time_base);
-  deviceInterface_->convertAVFrameToFrameOutput(
-      avFrame, frameOutput, std::move(preAllocatedOutputTensor));
+  {
+    ScopedBenchmarkTimer convertTimer("convert_avframe");
+    deviceInterface_->convertAVFrameToFrameOutput(
+        avFrame, frameOutput, std::move(preAllocatedOutputTensor));
+  }
   return frameOutput;
 }
 
@@ -1456,6 +1468,7 @@ FrameOutput SingleStreamDecoder::convertAVFrameToFrameOutput(
 // be 3D or 4D.
 torch::stable::Tensor SingleStreamDecoder::maybePermuteHWC2CHW(
     torch::stable::Tensor& hwcTensor) {
+  BENCHMARK_TIMER("permute");
   if (streamInfos_[activeStreamIndex_].videoStreamOptions.dimensionOrder ==
       "NHWC") {
     return hwcTensor;
