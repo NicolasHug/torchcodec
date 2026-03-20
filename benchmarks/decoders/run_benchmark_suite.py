@@ -63,18 +63,20 @@ VIDEO_SPECS_1080P = [
 NUM_RUNS = 3
 OUTPUT_DIR = "benchmarks/benchmark_plots"
 DEFAULT_GOP = 50
+DEFAULT_BF = -1  # -1 means use libx264 default (usually 3)
 FPS = 30
 
 
-def get_video_path(label, gop):
-    return os.path.join(VIDEO_DIR, f"{label}_g{gop}.mp4")
+def get_video_path(label, gop, bf):
+    bf_suffix = "" if bf < 0 else f"_bf{bf}"
+    return os.path.join(VIDEO_DIR, f"{label}_g{gop}{bf_suffix}.mp4")
 
 
-def ensure_test_videos(specs, gop):
+def ensure_test_videos(specs, gop, bf):
     """Generate test videos with ffmpeg if they don't already exist."""
     os.makedirs(VIDEO_DIR, exist_ok=True)
     for label, size, duration in specs:
-        path = get_video_path(label, gop)
+        path = get_video_path(label, gop, bf)
         if os.path.exists(path):
             continue
         print(f"  Generating {path}...")
@@ -83,8 +85,10 @@ def ensure_test_videos(specs, gop):
             "-i", f"testsrc=duration={duration}:size={size}:rate={FPS}",
             "-c:v", "libx264", "-pix_fmt", "yuv420p",
             "-g", str(gop),
-            path,
         ]
+        if bf >= 0:
+            cmd += ["-bf", str(bf)]
+        cmd.append(path)
         subprocess.run(cmd, check=True, capture_output=True)
     print()
 
@@ -172,19 +176,31 @@ def _make_stacked_bar_pair(
     fig, all_results, step_results, labels, leaf_categories, cmap, step,
     value_fn, title, ylabel,
 ):
-    """Draw 2 side-by-side subplots: left = all frames, right = every Nth frame (own scale).
+    """Draw 2 side-by-side subplots with a dedicated legend row below.
+
+    Uses GridSpec with 2 rows: top row for the two bar charts,
+    bottom row for the legend (spans both columns).
 
     leaf_categories: dict mapping cpp_timer_name -> display_name
     """
     import numpy as np
+    from matplotlib.gridspec import GridSpec
 
-    ax_all, ax_step = fig.subplots(1, 2)
+    gs = GridSpec(
+        2, 2, figure=fig, height_ratios=[1, 0.12], hspace=0.45,
+    )
+    ax_all = fig.add_subplot(gs[0, 0])
+    ax_step = fig.add_subplot(gs[0, 1])
+    ax_legend = fig.add_subplot(gs[1, :])
+    ax_legend.axis("off")
 
     cat_items = list(leaf_categories.items())
     x = np.arange(len(labels))
 
     # --- Left: all frames ---
     bottoms = np.zeros(len(labels))
+    bars = []
+    bar_labels = []
     for ci, (cpp_name, display_name) in enumerate(cat_items):
         vals = []
         for l in labels:
@@ -192,15 +208,16 @@ def _make_stacked_bar_pair(
             total_ms = r[cpp_name][0] if cpp_name in r else 0
             vals.append(value_fn(total_ms, nf))
         vals = np.array(vals)
-        ax_all.bar(x, vals, 0.6, bottom=bottoms, label=display_name,
-                   color=cmap[ci], edgecolor="white", linewidth=0.5)
+        b = ax_all.bar(x, vals, 0.6, bottom=bottoms, label=display_name,
+                       color=cmap[ci], edgecolor="white", linewidth=0.5)
+        bars.append(b)
+        bar_labels.append(display_name)
         bottoms += vals
 
     ax_all.set_xticks(x)
     ax_all.set_xticklabels(labels, rotation=30, ha="right")
     ax_all.set_ylabel(ylabel)
     ax_all.set_title("All frames", fontsize=11, fontweight="bold")
-    ax_all.legend(loc="upper left", fontsize=7, ncol=1)
 
     # --- Right: every Nth frame (own scale) ---
     bottoms = np.zeros(len(labels))
@@ -219,9 +236,20 @@ def _make_stacked_bar_pair(
     ax_step.set_xticklabels(labels, rotation=30, ha="right")
     ax_step.set_ylabel(ylabel)
     ax_step.set_title(f"Every {step}th frame", fontsize=11, fontweight="bold")
-    ax_step.legend(loc="upper left", fontsize=7, ncol=1)
 
     fig.suptitle(title, fontsize=14, fontweight="bold")
+
+    # --- Legend in dedicated bottom row ---
+    ax_legend.legend(
+        bars, bar_labels,
+        loc="center",
+        ncol=min(len(bar_labels), 5),
+        fontsize=22,
+        frameon=True,
+        borderpad=1.0,
+        columnspacing=2.0,
+        markerscale=2.0,
+    )
 
 
 def _make_stats_pair(
@@ -271,7 +299,7 @@ def _make_stats_pair(
         ax.set_xticklabels(labels, rotation=30, ha="right")
         ax.set_ylabel("Count")
         ax.set_title(title, fontsize=11, fontweight="bold")
-        ax.legend(loc="upper left", fontsize=7)
+        ax.legend(loc="upper left", fontsize=12)
 
         # Annotate packets-per-frame ratio
         for i, l in enumerate(labels):
@@ -291,7 +319,7 @@ def _make_stats_pair(
 
 
 def make_plots(cpu_all, cpu_step, cuda_all, cuda_step, output_dir, step, labels, gop,
-               use_cache=True):
+               bf=-1, use_cache=True):
     import matplotlib.pyplot as plt
     import matplotlib as mpl
     import numpy as np
@@ -307,9 +335,11 @@ def make_plots(cpu_all, cpu_step, cuda_all, cuda_step, output_dir, step, labels,
     })
 
     gpu_name = torch.cuda.get_device_name(0) if torch.cuda.is_available() else "N/A"
-    gop_info = f"(GOP={gop})"
+    bf_info = f", bf={bf}" if bf >= 0 else ""
+    gop_info = f"(GOP={gop}{bf_info})"
     cache_info = ", cache" if use_cache else ", no-cache"
     cache_suffix = "" if use_cache else "_no_cache"
+    bf_suffix = "" if bf < 0 else f"_bf{bf}"
     plot_idx = 1
 
     per_frame = lambda total_ms, nf: total_ms / nf if nf > 0 else 0
@@ -319,26 +349,26 @@ def make_plots(cpu_all, cpu_step, cuda_all, cuda_step, output_dir, step, labels,
     if cpu_all:
         cpu_cmap = plt.cm.Set2(np.linspace(0, 1, len(CPU_LEAF_CATEGORIES)))
 
-        fig = plt.figure(figsize=(18, 6))
+        fig = plt.figure(figsize=(18, 10))
         _make_stacked_bar_pair(
             fig, cpu_all, cpu_step, labels, CPU_LEAF_CATEGORIES, cpu_cmap, step,
             per_frame, f"CPU Decode: Per-frame Time Breakdown {gop_info}", "Time per frame (ms)",
         )
         plt.tight_layout()
-        path = os.path.join(output_dir, f"{plot_idx:02d}_cpu_perframe.png")
+        path = os.path.join(output_dir, f"{plot_idx:02d}_cpu_perframe{bf_suffix}.png")
         plt.savefig(path, dpi=150, bbox_inches="tight")
         plt.close()
         print(f"  Saved {path}")
         plot_idx += 1
 
         # ─── CPU breakdown: total time ───
-        fig = plt.figure(figsize=(18, 6))
+        fig = plt.figure(figsize=(18, 10))
         _make_stacked_bar_pair(
             fig, cpu_all, cpu_step, labels, CPU_LEAF_CATEGORIES, cpu_cmap, step,
             total_time, f"CPU Decode: Total Time Breakdown {gop_info}", "Total time (ms)",
         )
         plt.tight_layout()
-        path = os.path.join(output_dir, f"{plot_idx:02d}_cpu_total.png")
+        path = os.path.join(output_dir, f"{plot_idx:02d}_cpu_total{bf_suffix}.png")
         plt.savefig(path, dpi=150, bbox_inches="tight")
         plt.close()
         print(f"  Saved {path}")
@@ -349,7 +379,7 @@ def make_plots(cpu_all, cpu_step, cuda_all, cuda_step, output_dir, step, labels,
         _make_stats_pair(fig, cpu_all, cpu_step, labels, step, is_cuda=False)
         fig.suptitle(f"CPU Decode: Packet & Seek Counts {gop_info}", fontsize=14, fontweight="bold")
         plt.tight_layout()
-        path = os.path.join(output_dir, f"{plot_idx:02d}_cpu_stats.png")
+        path = os.path.join(output_dir, f"{plot_idx:02d}_cpu_stats{bf_suffix}.png")
         plt.savefig(path, dpi=150, bbox_inches="tight")
         plt.close()
         print(f"  Saved {path}")
@@ -359,28 +389,28 @@ def make_plots(cpu_all, cpu_step, cuda_all, cuda_step, output_dir, step, labels,
     if cuda_all:
         cuda_cmap = plt.cm.tab20(np.linspace(0, 1, len(CUDA_LEAF_CATEGORIES)))
 
-        fig = plt.figure(figsize=(18, 7))
+        fig = plt.figure(figsize=(18, 10))
         _make_stacked_bar_pair(
             fig, cuda_all, cuda_step, labels, CUDA_LEAF_CATEGORIES, cuda_cmap, step,
             per_frame, f"CUDA (beta) Decode: Per-frame Time {gop_info}{cache_info} — {gpu_name}",
             "Time per frame (ms)",
         )
         plt.tight_layout()
-        path = os.path.join(output_dir, f"{plot_idx:02d}_cuda_perframe{cache_suffix}.png")
+        path = os.path.join(output_dir, f"{plot_idx:02d}_cuda_perframe{bf_suffix}{cache_suffix}.png")
         plt.savefig(path, dpi=150, bbox_inches="tight")
         plt.close()
         print(f"  Saved {path}")
         plot_idx += 1
 
         # ─── CUDA breakdown: total time ───
-        fig = plt.figure(figsize=(18, 7))
+        fig = plt.figure(figsize=(18, 10))
         _make_stacked_bar_pair(
             fig, cuda_all, cuda_step, labels, CUDA_LEAF_CATEGORIES, cuda_cmap, step,
             total_time, f"CUDA (beta) Decode: Total Time {gop_info}{cache_info} — {gpu_name}",
             "Total time (ms)",
         )
         plt.tight_layout()
-        path = os.path.join(output_dir, f"{plot_idx:02d}_cuda_total{cache_suffix}.png")
+        path = os.path.join(output_dir, f"{plot_idx:02d}_cuda_total{bf_suffix}{cache_suffix}.png")
         plt.savefig(path, dpi=150, bbox_inches="tight")
         plt.close()
         print(f"  Saved {path}")
@@ -394,7 +424,7 @@ def make_plots(cpu_all, cpu_step, cuda_all, cuda_step, output_dir, step, labels,
             fontsize=14, fontweight="bold",
         )
         plt.tight_layout()
-        path = os.path.join(output_dir, f"{plot_idx:02d}_cuda_stats{cache_suffix}.png")
+        path = os.path.join(output_dir, f"{plot_idx:02d}_cuda_stats{bf_suffix}{cache_suffix}.png")
         plt.savefig(path, dpi=150, bbox_inches="tight")
         plt.close()
         print(f"  Saved {path}")
@@ -436,6 +466,8 @@ def main():
     )
     parser.add_argument("--gop", type=int, default=DEFAULT_GOP,
                         help=f"GOP size (keyframe interval) for test videos (default: {DEFAULT_GOP})")
+    parser.add_argument("--bf", type=int, default=DEFAULT_BF,
+                        help="Number of B-frames for test videos (-1 = libx264 default, 0 = no B-frames)")
     parser.add_argument("--num-runs", type=int, default=NUM_RUNS, help="Number of runs to average")
     parser.add_argument("--step", type=int, default=50, help="Frame step for sampling comparison")
     parser.add_argument("--output-dir", default=OUTPUT_DIR, help="Output directory for plots")
@@ -463,6 +495,8 @@ def main():
         print(f"GPU: {gpu_name}")
     print(f"Resolution: {args.resolution}")
     print(f"GOP size: {args.gop} (keyframe every {args.gop} frames)")
+    bf_str = f"{args.bf}" if args.bf >= 0 else "default"
+    print(f"B-frames: {bf_str}")
     print(f"Averaging over {args.num_runs} runs per video")
     print(f"Sampling comparison step: every {args.step} frames")
     if run_cuda:
@@ -472,10 +506,10 @@ def main():
 
     # Generate test videos if needed
     print("Checking test videos...")
-    ensure_test_videos(specs, args.gop)
+    ensure_test_videos(specs, args.gop, args.bf)
 
     labels = [label for label, _, _ in specs]
-    videos = [(label, get_video_path(label, args.gop)) for label, _, _ in specs]
+    videos = [(label, get_video_path(label, args.gop, args.bf)) for label, _, _ in specs]
 
     cpu_all = {}
     cpu_step = {}
@@ -549,6 +583,7 @@ def main():
         args.step,
         labels,
         args.gop,
+        bf=args.bf,
         use_cache=not args.no_cache,
     )
     print("\nDone!")
