@@ -1575,7 +1575,7 @@ class TestVideoDecoder:
     @pytest.mark.parametrize("device", ("cuda", "cuda:ffmpeg"))
     @pytest.mark.parametrize("output_dtype", (torch.uint8, torch.float32))
     def test_odd_sized_videos_444(self, asset, device, output_dtype):
-        # These are yuv444p H264 videos. On the beta CUDA backend, 4:4:4
+        # These are yuv444p H264 videos. On the NVDEC CUDA backend, 4:4:4
         # chroma isn't supported by NVDEC so these go through the CPU
         # fallback path entirely (decoding + color conversion on CPU).
         if output_dtype == torch.float32 and device == "cuda:ffmpeg":
@@ -1798,7 +1798,7 @@ class TestVideoDecoder:
         decoder.get_frames_played_at(torch.tensor([0, 1], dtype=torch.float))
 
     # Note [NVDEC vs FFmpeg CUDA pixel mismatches]:
-    # These tests compare the NVDEC (beta) CUDA backend against the FFmpeg
+    # These tests compare the NVDEC CUDA backend against the FFmpeg
     # CUDA backend. There are two known sources of pixel mismatches:
     #
     # 1. FFmpeg 4: small pixel differences on a few pixels (< 1%), cause

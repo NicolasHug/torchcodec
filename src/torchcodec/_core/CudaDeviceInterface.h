@@ -4,24 +4,40 @@
 // This source code is licensed under the BSD-style license found in the
 // LICENSE file in the root directory of this source tree.
 
+// NVDEC CUDA device interface that provides direct control over NVDEC
+// while keeping FFmpeg for demuxing. A lot of the logic, particularly the use
+// of a cache for the decoders, is inspired by DALI's implementation which is
+// APACHE 2.0:
+// https://github.com/NVIDIA/DALI/blob/c7539676a24a8e9e99a6e8665e277363c5445259/dali/operators/video/frames_decoder_gpu.cc#L1
+//
+// NVDEC / NVCUVID docs:
+// https://docs.nvidia.com/video-technologies/video-codec-sdk/13.0/nvdec-video-decoder-api-prog-guide/index.html#using-nvidia-video-decoder-nvdecode-api
+
 #pragma once
 
 #include "CUDACommon.h"
+#include "Cache.h"
 #include "DeviceInterface.h"
-#include "FilterGraph.h"
+#include "FFMPEGCommon.h"
+#include "NVDECCache.h"
+#include "Transform.h"
 #include "color_conversion.h"
+
+#include <memory>
+#include <mutex>
+#include <queue>
+#include <unordered_map>
+#include <vector>
+
+#include "nvcuvid_include/cuviddec.h"
+#include "nvcuvid_include/nvcuvid.h"
 
 namespace facebook::torchcodec {
 
 class CudaDeviceInterface : public DeviceInterface {
  public:
-  CudaDeviceInterface(const StableDevice& device);
-
+  explicit CudaDeviceInterface(const StableDevice& device);
   virtual ~CudaDeviceInterface();
-
-  std::optional<const AVCodec*> find_codec(
-      const AVCodecID& codec_id,
-      bool is_decoder = true) override;
 
   void initialize(const SharedAVCodecContext& codec_context) override;
 
@@ -29,13 +45,11 @@ class CudaDeviceInterface : public DeviceInterface {
       const AVStream* av_stream,
       const UniqueDecodingAVFormatContext& av_format_ctx,
       const VideoStreamOptions& video_stream_options,
-      [[maybe_unused]] const std::vector<std::unique_ptr<Transform>>&
-          transforms,
-      [[maybe_unused]] const std::optional<FrameDims>& resized_output_dims)
-      override;
+      const std::vector<std::unique_ptr<Transform>>& transforms,
+      const std::optional<FrameDims>& resized_output_dims) override;
 
-  void register_hardware_device_with_codec(
-      AVCodecContext* codec_context) override;
+  OutputDtype get_pre_allocation_dtype(
+      OutputDtype requested_dtype) const override;
 
   void convert_av_frame_to_frame_output(
       UniqueAVFrame& av_frame,
@@ -43,41 +57,159 @@ class CudaDeviceInterface : public DeviceInterface {
       std::optional<torch::stable::Tensor> pre_allocated_output_tensor)
       override;
 
+  int send_packet(ReferenceAVPacket& packet) override;
+  int send_eof_packet() override;
+  int receive_frame(UniqueAVFrame& av_frame) override;
+  void flush() override;
+
+  // NVDEC callback functions (must be public for C callbacks)
+  int stream_property_change(CUVIDEOFORMAT* video_format);
+  int frame_ready_for_decoding(CUVIDPICPARAMS* pic_params);
+  int frame_ready_in_display_order(CUVIDPARSERDISPINFO* disp_info);
+
   std::string get_details() override;
 
-  UniqueAVFrame convert_tensor_to_av_frame_for_encoding(
-      const torch::stable::Tensor& tensor,
-      int frame_index,
-      AVCodecContext* codec_context) override;
-
-  void setup_hardware_frame_context_for_encoding(
-      AVCodecContext* codec_context) override;
-
  private:
-  // Our CUDA decoding code assumes NV12 format. In order to handle other
-  // kinds of input, we need to convert them to NV12. Our current implementation
-  // does this using filtergraph.
-  UniqueAVFrame maybe_convert_av_frame_to_nv12_or_rgb24(
-      UniqueAVFrame& av_frame);
+  int send_cuvid_packet(CUVIDSOURCEDATAPACKET& cuvid_packet);
 
-  // We sometimes encounter frames that cannot be decoded on the CUDA device.
-  // Rather than erroring out, we decode them on the CPU.
-  std::unique_ptr<DeviceInterface> cpu_interface_;
+  void initialize_bsf(
+      const AVCodecParameters* codec_par,
+      const UniqueDecodingAVFormatContext& av_format_ctx);
+  // Apply bitstream filter, returns filtered packet or original if no filter
+  // needed.
+  ReferenceAVPacket& apply_bsf(
+      ReferenceAVPacket& packet,
+      ReferenceAVPacket& filtered_packet);
 
-  VideoStreamOptions video_stream_options_;
-  AVRational time_base_;
+  CUdeviceptr previously_mapped_frame_ = 0;
+  void unmap_previous_frame();
 
-  UniqueAVBufferRef hardware_device_ctx_;
+  UniqueAVFrame convert_cuda_frame_to_av_frame(
+      CUdeviceptr frame_ptr,
+      unsigned int pitch,
+      const CUVIDPARSERDISPINFO& disp_info);
 
-  // This filtergraph instance is only used for NV12 format conversion in
-  // maybeConvertAVFrameToNV12().
-  std::unique_ptr<FiltersConfig> nv12_conversion_config_;
-  std::unique_ptr<FilterGraph> nv12_conversion_;
+  UniqueAVFrame transfer_cpu_frame_to_gpu(
+      UniqueAVFrame& cpu_frame,
+      AVPixelFormat target_pix_fmt);
 
-  bool using_cpu_fallback_ = false;
-  bool has_decoded_frame_ = false;
+  void apply_rotation(
+      FrameOutput& frame_output,
+      std::optional<torch::stable::Tensor> pre_allocated_output_tensor);
+
+  CUvideoparser video_parser_ = nullptr;
+  UniqueCUvideodecoder decoder_;
+  CUVIDEOFORMAT video_format_ = {};
+  CUVIDEOFORMATEX parser_ext_info_ = {};
+
+  std::queue<CUVIDPARSERDISPINFO> ready_frames_;
+
+  bool eof_sent_ = false;
+
+  AVRational time_base_ = {0, 1};
+  AVRational frame_rate_avg_from_ffmpeg_ = {0, 1};
+
+  UniqueAVBSFContext bitstream_filter_;
+
+  std::unique_ptr<DeviceInterface> cpu_fallback_;
+  bool nvcuvid_available_ = false;
+  UniqueSwsContext sws_context_;
+
+  SwsConfig prev_sws_config_;
+  Rotation rotation_ = Rotation::NONE;
+  OutputDtype output_dtype_ = OutputDtype::UINT8;
+  cudaVideoSurfaceFormat surface_format_ = cudaVideoSurfaceFormat_NV12;
 
   CachedColorMatrix cached_color_matrix_;
 };
 
 } // namespace facebook::torchcodec
+
+/* clang-format off */
+// Note: [General design, sendPacket, receiveFrame, frame ordering and NVCUVID callbacks]
+//
+// At a high level, this decoding interface mimics the FFmpeg send/receive
+// architecture:
+// - sendPacket(AVPacket) sends an AVPacket from the FFmpeg demuxer to the
+//   NVCUVID parser.
+// - receiveFrame(AVFrame) is a non-blocking call:
+//   - if a frame is ready **in display order**, it must return it. By display
+//   order, we mean that receiveFrame() must return frames with increasing pts
+//   values when called successively.
+//   - if no frame is ready, it must return AVERROR(EAGAIN) to indicate the
+//   caller should send more packets.
+//
+// The rest of this note assumes you have a reasonable level of familiarity with
+// the sendPacket/receiveFrame calling pattern. If you don't, look up the core
+// decoding loop in SingleVideoDecoder.
+//
+// The frame re-ordering problem:
+// Depending on the codec and on the encoding parameters, a packet from a video
+// stream may contain exactly one frame, more than one frame, or a fraction of a
+// frame. And, there may be non-linear frame dependencies because of B-frames,
+// which need both past *and* future frames to be decoded. Consider the
+// following stream, with frames presented in display order: I0 B1 P2 B3 P4 ...
+// - I0 is an I-frame (also key frame, can be decoded independently)
+// - B1 is a B-frame (bi-directional) which needs both I0 and P2 to be decoded
+// - P2 is a P-frame (predicted frame) which only needs I0 to be decodec.
+//
+// Because B1 needs both I0 and P2 to be properly decoded, the decode order
+// (packet order), defined by the encoder, must be: I0 P2 B1 P4 B3 ... which is
+// different from the display order.
+//
+// SendPacket(AVPacket)'s job is just to pass down the packet to the NVCUVID
+// parser by calling cuvidParseVideoData(packet). When
+// cuvidParseVideoData(packet) is called, it may trigger callbacks,
+// particularly:
+// - streamPropertyChange(videoFormat): triggered once at the start of the
+//   stream, and possibly later if the stream properties change (e.g.
+//   resolution).
+// - frameReadyForDecoding(picParams)): triggered **in decode order** when the
+//   parser has accumulated enough data to decode a frame. We send that frame to
+//   the NVDEC hardware for **async** decoding.
+// - frameReadyInDisplayOrder(dispInfo)): triggered **in display order** when a
+//   frame is ready to be "displayed" (returned). At that point, the parser also
+//   gives us the pts of that frame. We store (a reference to) that frame in a
+//   FIFO queue: readyFrames_.
+//
+// When receiveFrame(AVFrame) is called, if readyFrames_ is not empty, we pop
+// the front of the queue, which is the next frame in display order, and map it
+// to an AVFrame by calling cuvidMapVideoFrame(). If readyFrames_ is empty we
+// return EAGAIN to indicate the caller should send more packets.
+//
+// There is potentially a small inefficiency due to the callback design: in
+// order for us to know that a frame is ready in display order, we need the
+// frameReadyInDisplayOrder callback to be triggered. This can only happen
+// within cuvidParseVideoData(packet) in sendPacket(). This means there may be
+// the following sequence of calls:
+//
+// sendPacket(relevantAVPacket)
+//   cuvidParseVideoData(relevantAVPacket)
+//     frameReadyForDecoding()
+//       cuvidDecodePicture()            Send frame to NVDEC for async decoding
+//
+// receiveFrame() -> EAGAIN              Frame is potentially already decoded
+//                                       and could be returned, but we don't
+//                                       know because frameReadyInDisplayOrder
+//                                       hasn't been triggered yet. We'll only
+//                                       know after sending another,
+//                                       potentially irrelevant packet.
+//
+// sendPacket(irrelevantAVPacket)
+//   cuvidParseVideoData(irrelevantAVPacket)
+//     frameReadyInDisplayOrder()       Only now do we know that our target
+//                                      frame is ready.
+//
+// receiveFrame()                       return target frame
+//
+// How much this matters in practice is unclear, but probably negligible in
+// general. Particularly when frames are decoded consecutively anyway, the
+// "irrelevantPacket" is actually relevant for a future target frame.
+//
+// Note that the alternative is to *not* rely on the frameReadyInDisplayOrder
+// callback. It's technically possible, but it would mean we now have to solve
+// two hard, *codec-dependent* problems that the callback was solving for us:
+// - we have to guess the frame's pts ourselves
+// - we have to re-order the frames ourselves to preserve display order.
+//
+/* clang-format on */

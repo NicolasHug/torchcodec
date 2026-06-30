@@ -51,8 +51,8 @@ ffmpeg_common_sources = [
 
 # CUDA sources, added to the core library only for CUDA-enabled builds.
 decoder_core_cuda_sources = [
+    "CudaFFmpegDeviceInterface.cpp",
     "CudaDeviceInterface.cpp",
-    "BetaCudaDeviceInterface.cpp",
     "NVDECCache.cpp",
     "CUDACommon.cpp",
     "NVCUVIDRuntimeLoader.cpp",
