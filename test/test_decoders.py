@@ -3884,6 +3884,75 @@ class TestBlocks:
             assert got.data.shape == ref.data.shape
             torch.testing.assert_close(got.data, ref.data, atol=0, rtol=0)
 
+    @needs_cuda
+    @pytest.mark.parametrize("frame_device", ("cpu", "cuda"))
+    @pytest.mark.parametrize("converter_device", ("cpu", "cuda"))
+    def test_converter_device_is_always_honored(self, frame_device, converter_device):
+        # A ColorConverter puts its output on its own device whatever device the
+        # frames arrive on, moving the samples there first if it has to.
+        converter = ColorConverter(device=converter_device)
+        got = self._to_frame_batch(
+            [
+                converter.convert(frame)
+                for frame in self._decoded_frames(NASA_VIDEO.path, frame_device)
+            ]
+        )
+        ref = VideoDecoder(NASA_VIDEO.path, device=converter_device).get_all_frames()
+
+        assert got.data.device.type == converter_device
+        assert got.data.shape == ref.data.shape
+
+        if frame_device == "cuda" and converter_device == "cpu":
+            # The only combination that isn't exact, and the transfer isn't why:
+            # swscale interpolates 4:2:0 chroma when converting the downloaded
+            # NV12 frame, where our CUDA kernel replicates it, so the two differ
+            # along chroma edges. test_transfer_preserves_samples() pins the
+            # download itself down on a 4:4:4 source, which has no chroma to
+            # upsample.
+            assert_tensor_close_on_at_least(got.data, ref.data, percentage=95, atol=3)
+        else:
+            torch.testing.assert_close(got.data, ref.data, atol=0, rtol=0)
+
+    @needs_cuda
+    def test_transfer_preserves_samples(self):
+        # 4:4:4 has no chroma to upsample, so the CPU and CUDA color conversions
+        # agree bar rounding. Handing the same CUDA frames to a converter on
+        # each device therefore measures the download and nothing else: had it
+        # dropped rows, mistaken the surface pitch for the row width, or failed
+        # to crop the even-sized padding, this could not hold. The source has
+        # odd dimensions precisely to exercise that last one.
+        frames = list(
+            self._decoded_frames(TESTSRC2_ODD_HEIGHT_AND_WIDTH_444.path, "cuda")
+        )
+        downloaded = self._to_frame_batch(
+            [ColorConverter(device="cpu").convert(frame) for frame in frames]
+        )
+        stayed_put = self._to_frame_batch(
+            [ColorConverter(device="cuda").convert(frame) for frame in frames]
+        )
+        assert_tensor_close_on_at_least(
+            downloaded.data, stayed_put.data.cpu(), percentage=100, atol=1
+        )
+
+    @needs_cuda
+    def test_upload_matches_native_cuda_frames(self):
+        # The other direction: a CPU frame the converter uploads must come out
+        # indistinguishable from one NVDEC produced itself.
+        converter = ColorConverter(device="cuda")
+        uploaded = self._to_frame_batch(
+            [
+                converter.convert(frame)
+                for frame in self._decoded_frames(NASA_VIDEO.path, "cpu")
+            ]
+        )
+        native = self._to_frame_batch(
+            [
+                converter.convert(frame)
+                for frame in self._decoded_frames(NASA_VIDEO.path, "cuda")
+            ]
+        )
+        torch.testing.assert_close(uploaded.data, native.data, atol=0, rtol=0)
+
     @pytest.mark.parametrize("device", _block_devices())
     def test_set_cuda_backend_is_a_noop(self, device):
         # The blocks always use the NVDEC CUDA backend. Asking for the "ffmpeg"

@@ -38,6 +38,12 @@ class ColorConverter:
 
     ``device`` accepts a string or a ``torch.device``. It defaults to ``None``,
     which means the current default device (see ``torch.set_default_device``).
+    It is always honored, whatever device the frames come from: a CPU frame fed
+    to a CUDA converter is uploaded first, a CUDA frame fed to a CPU converter
+    is downloaded first, and the RGB output always lands on ``device``. Those
+    transfers are synchronous and cost about as much as the conversion itself,
+    so a pipeline that cares about throughput should keep the decoder and the
+    converter on the same device.
     """
 
     def __init__(
@@ -51,7 +57,7 @@ class ColorConverter:
         )
 
     def convert(self, raw_frame: RawFrame) -> Frame:
-        data = _blocks_convert_frame(self._handle, raw_frame._handle)
+        data = _blocks_convert_frame(self._handle, raw_frame._handle, raw_frame._device)
         if raw_frame.storage is not None:
             # See [Standalone Frame Storage and the need for record_stream]
             raw_frame.storage.record_stream(torch.cuda.current_stream())

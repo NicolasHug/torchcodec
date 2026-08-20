@@ -165,6 +165,30 @@ class DeviceInterface {
     return std::nullopt;
   }
 
+  // ------------------------------------------
+  // Moving samples on and off this device
+  // ------------------------------------------
+  //
+  // Both directions live on the accelerator side, because the CPU interface has
+  // no way to touch device memory. Both return a frame that owns its samples,
+  // carries the source frame's properties, and can be handed to
+  // convert_av_frame_to_frame_output().
+
+  // Copy a CPU frame's samples onto this device, converting them on the way to
+  // a pixel format this interface can color-convert.
+  virtual UniqueAVFrame upload_frame_from_cpu(
+      [[maybe_unused]] const AVFrame& cpu_frame) {
+    STD_TORCH_CHECK(
+        false, "This device interface cannot upload frames from the CPU.");
+  }
+
+  // Copy back to the CPU the samples of a frame that lives on this device.
+  virtual UniqueAVFrame download_frame_to_cpu(
+      [[maybe_unused]] const AVFrame& device_frame) {
+    STD_TORCH_CHECK(
+        false, "This device interface cannot download frames to the CPU.");
+  }
+
   // Flush remaining frames from decoder
   virtual void flush() {
     STD_TORCH_CHECK(

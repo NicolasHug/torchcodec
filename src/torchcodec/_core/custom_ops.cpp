@@ -87,7 +87,8 @@ STABLE_TORCH_LIBRARY_FRAGMENT(torchcodec_ns, m) {
       "_blocks_packet_decoder_receive_frame(Tensor(a!) decoder) -> (Tensor, int, float, float, str, Tensor)");
   m.def(
       "_blocks_create_color_converter(str device=\"cpu\", str output_dtype=\"uint8\") -> Tensor");
-  m.def("_blocks_convert_frame(Tensor(a!) converter, Tensor frame) -> Tensor");
+  m.def(
+      "_blocks_convert_frame(Tensor(a!) converter, Tensor frame, str device) -> Tensor");
   m.def(
       "_blocks_frame_metadata(Tensor frame) -> (str, str, str, int, int, int, float)");
   m.def(
@@ -920,12 +921,17 @@ torch::stable::Tensor _blocks_create_color_converter(
   return wrap_pointer_to_tensor<ColorConverter>(std::move(converter));
 }
 
+// `device` is where the frame's samples live, as reported by the PacketDecoder
+// that produced it. The converter moves them to its own device if they're
+// somewhere else.
 torch::stable::Tensor _blocks_convert_frame(
     torch::stable::Tensor& converter,
-    torch::stable::Tensor& frame) {
+    torch::stable::Tensor& frame,
+    std::string device) {
   ColorConverter* converter_ptr =
       unwrap_tensor_to_pointer<ColorConverter>(converter);
-  return converter_ptr->convert(*unwrap_tensor_to_pointer<AVFrame>(frame));
+  return converter_ptr->convert(
+      *unwrap_tensor_to_pointer<AVFrame>(frame), device);
 }
 
 using OpsFrameMetadataOutput = std::tuple<

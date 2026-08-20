@@ -76,6 +76,9 @@ class BetaCudaDeviceInterface : public DeviceInterface {
   int receive_frame(UniqueAVFrame& av_frame) override;
   void flush() override;
 
+  UniqueAVFrame upload_frame_from_cpu(const AVFrame& cpu_frame) override;
+  UniqueAVFrame download_frame_to_cpu(const AVFrame& device_frame) override;
+
   // NVDEC callback functions (must be public for C callbacks)
   int stream_property_change(CUVIDEOFORMAT* video_format);
   int frame_ready_for_decoding(CUVIDPICPARAMS* pic_params);

@@ -24,6 +24,7 @@
 
 extern "C" {
 #include <libavutil/hwcontext_cuda.h>
+#include <libavutil/imgutils.h>
 #include <libavutil/pixdesc.h>
 }
 
@@ -346,6 +347,28 @@ void standalone_frame_free_callback(
   delete reinterpret_cast<StandAloneFrameAttachedData*>(data);
 }
 
+// Give `av_frame` ownership of the GPU buffer holding its samples, and record
+// the stream that buffer is being filled on so that a consumer running on
+// another stream knows what to wait for.
+void attach_gpu_storage(
+    AVFrame& av_frame,
+    torch::stable::Tensor storage,
+    cudaStream_t producer_stream) {
+  auto attached_data = new StandAloneFrameAttachedData();
+  attached_data->producer_stream = producer_stream;
+  attached_data->storage = std::move(storage);
+
+  av_buffer_unref(&av_frame.opaque_ref);
+  av_frame.opaque_ref = av_buffer_create(
+      reinterpret_cast<uint8_t*>(attached_data),
+      sizeof(StandAloneFrameAttachedData),
+      standalone_frame_free_callback,
+      nullptr,
+      0);
+  STD_TORCH_CHECK(
+      av_frame.opaque_ref != nullptr, "Failed to attach standalone frame data");
+}
+
 class CudaContextGuard {
   // There's one CUDA context per process per device. But new threads aren't
   // bound to a context. The binding often happens automatically when calling
@@ -383,6 +406,14 @@ BetaCudaDeviceInterface::BetaCudaDeviceInterface(const StableDevice& device)
   STD_TORCH_CHECK(g_cuda_nvdec, "NvdecCudaDeviceInterface was not registered!");
   STD_TORCH_CHECK(
       device_.type() == kStableCUDA, "Unsupported device: must be CUDA");
+
+  // Pin ourselves to a concrete GPU. A device index of -1 means "whatever the
+  // current device is", which is resolved afresh on every CUDA call: an
+  // interface built on one thread and used on another would then straddle two
+  // GPUs, and the device we report to our callers would name neither. It also
+  // lets a ColorConverter compare its device against a frame's without "cuda"
+  // and "cuda:0" looking like two different places.
+  device_ = StableDevice(kStableCUDA, get_device_index(device_));
 
   // Note: now that we have the CudaContextGuard, we might not need to do that
   // anymore. The comment says we need pytorch to create the context - maybe
@@ -1019,18 +1050,102 @@ void BetaCudaDeviceInterface::make_frame_standalone(UniqueAVFrame& av_frame) {
     storage = copy_nvdec_surface(av_frame, current_stream);
   }
 
-  auto attached_data = new StandAloneFrameAttachedData();
-  attached_data->producer_stream = current_stream;
-  attached_data->storage = std::move(storage);
-  av_frame->opaque_ref = av_buffer_create(
-      reinterpret_cast<uint8_t*>(attached_data),
-      sizeof(StandAloneFrameAttachedData),
-      standalone_frame_free_callback,
-      nullptr,
-      0);
+  attach_gpu_storage(*av_frame, std::move(storage), current_stream);
+}
+
+UniqueAVFrame BetaCudaDeviceInterface::upload_frame_from_cpu(
+    const AVFrame& cpu_frame) {
+  CudaContextGuard context_guard(device_.index());
+  cudaStream_t current_stream = get_current_cuda_stream(device_.index());
+
+  auto uploaded = upload_cpu_frame_to_gpu(cpu_frame, current_stream);
+  attach_gpu_storage(
+      *uploaded.av_frame, std::move(uploaded.storage), current_stream);
+  return std::move(uploaded.av_frame);
+}
+
+UniqueAVFrame BetaCudaDeviceInterface::download_frame_to_cpu(
+    const AVFrame& device_frame) {
+  CudaContextGuard context_guard(device_.index());
+  cudaStream_t current_stream = get_current_cuda_stream(device_.index());
+
+  // The samples are produced asynchronously by whoever decoded or uploaded
+  // them, on their own stream. We must not read them before that's done.
+  if (device_frame.opaque_ref != nullptr) {
+    auto attached_data = reinterpret_cast<StandAloneFrameAttachedData*>(
+        device_frame.opaque_ref->data);
+    sync_streams(
+        /*running_stream=*/attached_data->producer_stream,
+        /*waiting_stream=*/current_stream);
+  }
+
+  auto pix_fmt = static_cast<AVPixelFormat>(device_frame.format);
+  const AVPixFmtDescriptor* desc = av_pix_fmt_desc_get(pix_fmt);
+  STD_TORCH_CHECK(desc != nullptr, "Unknown pixel format on decoded frame");
+
+  UniqueAVFrame cpu_frame(av_frame_alloc());
+  STD_TORCH_CHECK(cpu_frame != nullptr, "Failed to allocate CPU AVFrame");
+  cpu_frame->format = device_frame.format;
+  cpu_frame->width = device_frame.width;
+  cpu_frame->height = device_frame.height;
+
+  int ret = av_frame_get_buffer(cpu_frame.get(), 0);
   STD_TORCH_CHECK(
-      av_frame->opaque_ref != nullptr,
-      "Failed to attach standalone frame data");
+      ret >= 0,
+      "Failed to allocate CPU frame buffer: ",
+      get_ffmpeg_error_string_from_error_code(ret));
+
+  // The surface may be backed by an even-sized buffer while describing an
+  // odd-sized frame; we only pull the rows and columns the frame actually
+  // claims, and leave the padding on the GPU.
+  int num_planes = av_pix_fmt_count_planes(pix_fmt);
+  for (int p = 0; p < num_planes; ++p) {
+    int row_bytes = av_image_get_linesize(pix_fmt, device_frame.width, p);
+    STD_TORCH_CHECK(row_bytes > 0, "Cannot size plane ", p, " of ", pix_fmt);
+    // Only the chroma planes are vertically subsampled; luma and alpha are
+    // full height.
+    bool is_chroma = (p == 1 || p == 2) && !(desc->flags & AV_PIX_FMT_FLAG_RGB);
+    int plane_height = is_chroma
+        ? AV_CEIL_RSHIFT(device_frame.height, desc->log2_chroma_h)
+        : device_frame.height;
+
+    cudaError_t err = cudaMemcpy2DAsync(
+        cpu_frame->data[p],
+        cpu_frame->linesize[p],
+        device_frame.data[p],
+        device_frame.linesize[p],
+        row_bytes,
+        plane_height,
+        cudaMemcpyDeviceToHost,
+        current_stream);
+    STD_TORCH_CHECK(
+        err == cudaSuccess,
+        "Failed to copy plane ",
+        p,
+        " to the CPU: ",
+        cudaGetErrorString(err));
+  }
+
+  // Our caller reads the samples from the host as soon as we return, so the
+  // copies can't stay in flight.
+  cudaError_t err = cudaStreamSynchronize(current_stream);
+  STD_TORCH_CHECK(
+      err == cudaSuccess,
+      "Failed to wait for the GPU-to-CPU download: ",
+      cudaGetErrorString(err));
+
+  ret = av_frame_copy_props(cpu_frame.get(), &device_frame);
+  STD_TORCH_CHECK(
+      ret >= 0,
+      "Failed to copy frame properties: ",
+      get_ffmpeg_error_string_from_error_code(ret));
+  // copy_props brought over opaque_ref along with the rest, which on a GPU
+  // frame owns the GPU buffer. Keeping it would pin device memory to a frame
+  // that no longer has anything to do with it, and would make this CPU frame
+  // look like a GPU one to anyone who inspects it.
+  av_buffer_unref(&cpu_frame->opaque_ref);
+
+  return cpu_frame;
 }
 
 std::optional<torch::stable::Tensor> BetaCudaDeviceInterface::get_frame_storage(
