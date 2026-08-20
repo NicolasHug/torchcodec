@@ -85,9 +85,9 @@ STABLE_TORCH_LIBRARY_FRAGMENT(torchcodec_ns, m) {
   m.def("_blocks_packet_decoder_reset(Tensor(a!) decoder) -> ()");
   m.def(
       "_blocks_packet_decoder_receive_frame(Tensor(a!) decoder) -> (Tensor, int, float, float, str, Tensor)");
+  m.def("_blocks_create_color_converter(str output_dtype=\"uint8\") -> Tensor");
   m.def(
-      "_blocks_create_color_converter(str device=\"cpu\", str output_dtype=\"uint8\") -> Tensor");
-  m.def("_blocks_convert_frame(Tensor(a!) converter, Tensor frame) -> Tensor");
+      "_blocks_convert_frame(Tensor(a!) converter, Tensor frame, str device) -> Tensor");
   m.def(
       "_blocks_frame_metadata(Tensor frame) -> (str, str, str, int, int, int, float)");
   m.def(
@@ -911,21 +911,22 @@ OpsReceiveFrameOutput _blocks_packet_decoder_receive_frame(
       storage);
 }
 
-torch::stable::Tensor _blocks_create_color_converter(
-    std::string device,
-    std::string output_dtype) {
-  validate_device_interface(device);
-  auto converter = std::make_unique<ColorConverter>(
-      StableDevice(device), parse_output_dtype_config(output_dtype));
+torch::stable::Tensor _blocks_create_color_converter(std::string output_dtype) {
+  auto converter =
+      std::make_unique<ColorConverter>(parse_output_dtype_config(output_dtype));
   return wrap_pointer_to_tensor<ColorConverter>(std::move(converter));
 }
 
+// `device` is the frame's device, as reported by the PacketDecoder that
+// produced it - the converter has none of its own.
 torch::stable::Tensor _blocks_convert_frame(
     torch::stable::Tensor& converter,
-    torch::stable::Tensor& frame) {
+    torch::stable::Tensor& frame,
+    std::string device) {
   ColorConverter* converter_ptr =
       unwrap_tensor_to_pointer<ColorConverter>(converter);
-  return converter_ptr->convert(*unwrap_tensor_to_pointer<AVFrame>(frame));
+  return converter_ptr->convert(
+      *unwrap_tensor_to_pointer<AVFrame>(frame), device);
 }
 
 using OpsFrameMetadataOutput = std::tuple<

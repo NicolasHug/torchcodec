@@ -9,6 +9,7 @@
 #include <memory>
 #include <optional>
 #include <string_view>
+#include <vector>
 
 #include "DeviceInterface.h"
 #include "FFMPEGCommon.h"
@@ -20,18 +21,33 @@ namespace facebook::torchcodec {
 class FORCE_PUBLIC_VISIBILITY ColorConverter {
  public:
   explicit ColorConverter(
-      const StableDevice& device = StableDevice(kStableCPU),
       OutputDtypeConfig output_dtype_config = OutputDtypeConfig::UINT8);
 
-  torch::stable::Tensor convert(const AVFrame& av_frame);
+  // `device` is where the frame's samples live, and where the output lands.
+  torch::stable::Tensor convert(
+      const AVFrame& av_frame,
+      const std::string& device);
 
  private:
-  void maybe_initialize_interface(OutputDtype output_dtype);
+  struct PerDevice {
+    // Kept as the string we were handed, not as a StableDevice: parsing a
+    // device string goes through the stable-ABI shim, and this sits on the
+    // per-frame path where the string is the same every time.
+    std::string device_string;
+    std::unique_ptr<DeviceInterface> interface;
+    std::optional<OutputDtype> initialized_output_dtype;
+  };
 
-  std::unique_ptr<DeviceInterface> device_interface_;
-  StableDevice device_;
+  DeviceInterface& interface_for(
+      const std::string& device,
+      OutputDtype output_dtype);
+
   OutputDtypeConfig output_dtype_config_;
-  std::optional<OutputDtype> initialized_output_dtype_;
+  // One interface per device we've been given a frame on. A converter has no
+  // device of its own: it follows its frames, and the same one may be fed CPU
+  // frames and CUDA frames in turn. There's a handful of devices at most, so a
+  // linear scan beats a hash map.
+  std::vector<PerDevice> interfaces_;
 };
 
 } // namespace facebook::torchcodec

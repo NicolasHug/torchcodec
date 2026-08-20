@@ -384,6 +384,14 @@ BetaCudaDeviceInterface::BetaCudaDeviceInterface(const StableDevice& device)
   STD_TORCH_CHECK(
       device_.type() == kStableCUDA, "Unsupported device: must be CUDA");
 
+  // Pin ourselves to a concrete GPU. A device index of -1 means "whatever the
+  // current device is", which is resolved afresh on every CUDA call: an
+  // interface built on one thread and used on another would then straddle two
+  // GPUs, and the device we report to our callers would name neither. Resolving
+  // once, here, is also what lets a caller pass our device on to someone else
+  // (see PacketDecoder and ColorConverter) and have it still mean this GPU.
+  device_ = StableDevice(kStableCUDA, get_device_index(device_));
+
   // Note: now that we have the CudaContextGuard, we might not need to do that
   // anymore. The comment says we need pytorch to create the context - maybe
   // that's true, but that's a very old comment now.
@@ -1365,14 +1373,6 @@ void BetaCudaDeviceInterface::convert_av_frame_to_frame_output(
   //
   // In contrast, a PacketDecoder will always upload CPU frames before retuning
   // them because its contract is to respect its device parameter.
-  //
-  // TODO_API_BREAKDOWN UF P1: Should test mismatch between device param of
-  // PacketDecoder and ColorConversion - maybe we're fine not handling this?
-  // Should check CUDA-CPU, CPU-CUDA, and CUDA-CUDA (with different devices)
-  // cases.
-  // TODO_API_BREAKDOWN UF P1: OK but we want the ColorConverter to be
-  // standalone: can we feed it frames on CPU and then on GPU? Will it be OK
-  // with that? Does that influence the TODO just above?
   bool needs_upload = mode() == Mode::Both && decoding_on_cpu_;
 
   // `uploaded` owns the GPU buffer for as long as it's in scope, which covers

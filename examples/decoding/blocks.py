@@ -63,15 +63,16 @@ subprocess.run(
 # it can output a frame, and it buffers a few frames that ``drain()`` returns
 # at the end.
 #
-# ``PacketDecoder`` and ``ColorConverter`` both accept ``device="cuda"``:
-# decoding then runs on NVDEC and the color conversion on the GPU, and the
-# frames never leave the device. Demuxing always happens on the CPU. Left
-# unspecified, ``device`` is the current default device.
+# ``PacketDecoder`` accepts ``device="cuda"``: decoding then runs on NVDEC. The
+# ``ColorConverter`` has no device of its own and follows the frames it's given,
+# so the color conversion happens on the GPU too and the frames never leave the
+# device. Demuxing always happens on the CPU. Left unspecified, the decoder's
+# ``device`` is the current default device.
 from torchcodec.decoders._blocks import ColorConverter, Demuxer, PacketDecoder
 
 demuxer = Demuxer(video_path)
 packet_decoder = PacketDecoder(demuxer, device=device)
-color_converter = ColorConverter(device=device)
+color_converter = ColorConverter()
 
 frames = []
 for packet in demuxer:
@@ -135,7 +136,7 @@ def sequential():
     # demux -> decode -> color-convert, all on the calling thread.
     demuxer = Demuxer(video_path)
     packet_decoder = PacketDecoder(demuxer, device=device)
-    color_converter = ColorConverter(device=device)
+    color_converter = ColorConverter()
     return color_convert(color_converter, decode(packet_decoder, demux(demuxer)))
 
 
@@ -143,7 +144,7 @@ def convert_on_own_thread():
     # [demux + decode] on one thread || [color-convert] on another.
     demuxer = Demuxer(video_path)
     packet_decoder = PacketDecoder(demuxer, device=device)
-    color_converter = ColorConverter(device=device)
+    color_converter = ColorConverter()
     raw_frames = prefetch(decode(packet_decoder, demux(demuxer)))
     return color_convert(color_converter, raw_frames)
 
@@ -154,7 +155,7 @@ def demux_on_own_thread():
     # color conversion both happen on the GPU, so they belong together.
     demuxer = Demuxer(video_path)
     packet_decoder = PacketDecoder(demuxer, device=device)
-    color_converter = ColorConverter(device=device)
+    color_converter = ColorConverter()
     packets = prefetch(demux(demuxer))
     return color_convert(color_converter, decode(packet_decoder, packets))
 
@@ -165,9 +166,9 @@ for pipeline in (sequential, convert_on_own_thread, demux_on_own_thread):
 
 # %%
 # Where you insert the thread boundaries is up to you, and so is everything
-# else: nothing stops you from running one pipeline per file, decoding on the
-# CPU while color-converting on the GPU, or feeding frames into your own
-# pre-fetching data loader.
+# else: nothing stops you from running one pipeline per file, mixing CPU and
+# CUDA pipelines that share a single ``ColorConverter``, or feeding frames into
+# your own pre-fetching data loader.
 
 # %%
 # Seeking
@@ -182,7 +183,7 @@ for pipeline in (sequential, convert_on_own_thread, demux_on_own_thread):
 # ``PacketDecoder`` must be ``reset()``.
 demuxer = Demuxer(video_path)
 packet_decoder = PacketDecoder(demuxer, device=device)
-color_converter = ColorConverter(device=device)
+color_converter = ColorConverter()
 
 seconds = 2.5
 demuxer.seek(seconds)
@@ -247,7 +248,7 @@ def yuv420_to_rgb(Y, U, V):
 
 
 ours = yuv420_to_rgb(Y, U, V)
-reference = ColorConverter(device=device).convert(raw_frame).data
+reference = ColorConverter().convert(raw_frame).data
 print(f"{ours.shape = }, mean abs diff vs ColorConverter: "
       f"{(ours.float() - reference.float()).abs().mean():.2f}")
 
@@ -334,7 +335,7 @@ ffmpeg.wait()
 ffmpeg = start_live_stream()
 demuxer = Demuxer(fifo_path)
 packet_decoder = PacketDecoder(demuxer, device=device)
-color_converter = ColorConverter(device=device)
+color_converter = ColorConverter()
 
 frames = []
 for frame in color_convert(color_converter, decode(packet_decoder, demux(demuxer))):

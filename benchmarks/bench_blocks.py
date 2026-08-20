@@ -114,7 +114,7 @@ def _consume(frames):
 def _decode_sequential(path, device="cpu"):
     demuxer = Demuxer(path)
     decoder = PacketDecoder(demuxer, device=device)
-    converter = ColorConverter(device=device)
+    converter = ColorConverter()
     _consume(_convert(converter, _decode(decoder, _demux(demuxer))))
 
 
@@ -122,7 +122,7 @@ def _decode_prefetch_frames(path, device="cpu"):
     # [demux + decode] on one thread || [color-convert] on another.
     demuxer = Demuxer(path)
     decoder = PacketDecoder(demuxer, device=device)
-    converter = ColorConverter(device=device)
+    converter = ColorConverter()
     frames = prefetch(_decode(decoder, _demux(demuxer)))
     _consume(_convert(converter, frames))
 
@@ -131,7 +131,7 @@ def _decode_prefetch_packets(path, device="cpu"):
     # [demux] on one thread || [decode + color-convert] on another.
     demuxer = Demuxer(path)
     decoder = PacketDecoder(demuxer, device=device)
-    converter = ColorConverter(device=device)
+    converter = ColorConverter()
     packets = prefetch(_demux(demuxer))
     _consume(_convert(converter, _decode(decoder, packets)))
 
@@ -140,7 +140,7 @@ def _decode_prefetch_packets_and_frames(path, device="cpu"):
     # [demux] || [decode] || [color-convert], each on its own thread.
     demuxer = Demuxer(path)
     decoder = PacketDecoder(demuxer, device=device)
-    converter = ColorConverter(device=device)
+    converter = ColorConverter()
     packets = prefetch(_demux(demuxer))
     frames = prefetch(_decode(decoder, packets))
     _consume(_convert(converter, frames))

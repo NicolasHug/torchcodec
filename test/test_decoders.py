@@ -3679,7 +3679,7 @@ class TestBlocks:
     def _make_blocks(path, device):
         demuxer = Demuxer(path)
         decoder = PacketDecoder(demuxer, device=device)
-        converter = ColorConverter(device=device)
+        converter = ColorConverter()
         return demuxer, decoder, converter
 
     def _decoded_frames(self, path, device):
@@ -3830,7 +3830,7 @@ class TestBlocks:
         # The blocks pipeline must agree with VideoDecoder for every dtype, on
         # both devices.
         demuxer, decoder, _ = self._make_blocks(video.path, device)
-        converter = ColorConverter(device=device, output_dtype=output_dtype)
+        converter = ColorConverter(output_dtype=output_dtype)
         got = self._to_frame_batch(
             list(self._convert(converter, self._decode(decoder, self._demux(demuxer))))
         )
@@ -3844,7 +3844,7 @@ class TestBlocks:
 
     @pytest.mark.parametrize("device", _block_devices())
     def test_output_dtype_auto_is_resolved_per_frame(self, device):
-        converter = ColorConverter(device=device, output_dtype="auto")
+        converter = ColorConverter(output_dtype="auto")
         dtypes = []
         for video in (NASA_VIDEO, NASA_VIDEO_HDR, NASA_VIDEO):
             frame = next(self._decoded_frames(video.path, device))
@@ -3855,14 +3855,14 @@ class TestBlocks:
     @pytest.mark.parametrize("device", _block_devices())
     def test_invalid_output_dtype(self, device):
         with pytest.raises(ValueError, match="Invalid output_dtype"):
-            ColorConverter(device=device, output_dtype=torch.uint16)
+            ColorConverter(output_dtype=torch.uint16)
 
     @pytest.mark.parametrize("device", _block_devices())
     def test_color_converter_reused_across_videos(self, device):
         # A single unbound ColorConverter must correctly convert frames from
         # different videos - here interleaved frame-by-frame, so the converter
         # switches input resolution/format/rotation on every call.
-        converter = ColorConverter(device=device)
+        converter = ColorConverter()
         videos = [NASA_VIDEO, BT709_FULL_RANGE, NASA_VIDEO_ROTATED]
         generators = [self._decoded_frames(v.path, device) for v in videos]
         outputs = [[] for _ in videos]
@@ -3884,6 +3884,58 @@ class TestBlocks:
             assert got.data.shape == ref.data.shape
             torch.testing.assert_close(got.data, ref.data, atol=0, rtol=0)
 
+    @needs_cuda
+    def test_cuda_device_index_is_resolved(self):
+        # A CUDA decoder created with a bare "cuda" pins itself to a concrete
+        # GPU at construction. Otherwise its device would mean "whatever the
+        # current device is", re-resolved on every CUDA call - so a decoder
+        # built on one thread and used on another could straddle two GPUs, and
+        # the device it reports would name neither. The ColorConverter follows
+        # that device, so it has to be unambiguous.
+        frame, _ = self._first_frame(NASA_VIDEO.path, "cuda")
+        assert frame._device == f"cuda:{torch.cuda.current_device()}"
+
+    @pytest.mark.skipif(torch.cuda.device_count() < 2, reason="needs at least 2 GPUs")
+    def test_second_cuda_device(self):
+        # Decoding on a GPU that isn't the current one, and color-converting
+        # there too. Reading a frame from the wrong GPU is at best an illegal
+        # memory access, so the converter must follow the frame's index and not
+        # just its device type.
+        frame, converter = self._first_frame(NASA_VIDEO.path, "cuda:1")
+        expected = torch.device("cuda:1")
+        assert all(plane.device == expected for plane in frame.planes)
+        assert converter.convert(frame).data.device == expected
+
+    @needs_cuda
+    @pytest.mark.parametrize(
+        "video",
+        (
+            NASA_VIDEO,
+            # NVDEC declines this one, so the CUDA decoder decodes it on the CPU
+            # and uploads it: its frames look like CPU frames but aren't.
+            TEST_SRC_2_720P_MPEG4,
+        ),
+    )
+    def test_color_converter_reused_across_devices(self, video):
+        # A ColorConverter has no device of its own, it follows its frames, so a
+        # single one can be fed CPU and CUDA frames. They're interleaved here,
+        # so it switches device on every single call.
+        converter = ColorConverter()
+        outputs = {"cpu": [], "cuda": []}
+        for cpu_decoded, cuda_decoded in zip(
+            self._decoded_frames(video.path, "cpu"),
+            self._decoded_frames(video.path, "cuda"),
+        ):
+            outputs["cpu"].append(converter.convert(cpu_decoded))
+            outputs["cuda"].append(converter.convert(cuda_decoded))
+
+        for device, frames in outputs.items():
+            got = self._to_frame_batch(frames)
+            ref = VideoDecoder(video.path, device=device).get_all_frames()
+            assert got.data.device.type == device
+            assert got.data.shape == ref.data.shape
+            self._assert_matches_video_decoder(got.data, ref.data, video)
+
     @pytest.mark.parametrize("device", _block_devices())
     def test_set_cuda_backend_is_a_noop(self, device):
         # The blocks always use the NVDEC CUDA backend. Asking for the "ffmpeg"
@@ -3902,9 +3954,9 @@ class TestBlocks:
 
     @pytest.mark.parametrize("device_str", _block_devices())
     def test_device_none_default_device(self, device_str):
-        # PacketDecoder and ColorConverter default to device=None, which should
-        # respect both the torch.device() context manager and
-        # torch.set_default_device().
+        # PacketDecoder defaults to device=None, which should respect both the
+        # torch.device() context manager and torch.set_default_device(). The
+        # ColorConverter has no device of its own and follows the frames.
 
         def assert_first_frame_is_on_default_device():
             # Note the absence of any device parameter.

@@ -13,7 +13,7 @@ import torch
 from torchcodec._core.ops import _blocks_convert_frame, _blocks_create_color_converter
 from torchcodec._frame import Frame
 
-from .._decoder_utils import convert_device_to_str, convert_output_dtype_to_str
+from .._decoder_utils import convert_output_dtype_to_str
 from ._frame import RawFrame
 
 
@@ -21,9 +21,11 @@ class ColorConverter:
     """Color-conversion building block: turns a decoded (YUV)
     :class:`RawFrame` into an RGB :class:`~torchcodec._frame.Frame` (CHW).
 
-    Not bound to anything: everything it needs (dims, pixel format, colorspace)
-    comes from the frame itself, so one converter can process frames from any
-    video. Passive and *not* thread-safe: use one ``ColorConverter`` per thread.
+    Not bound to anything: everything it needs (dims, pixel format, colorspace,
+    device) comes from the frame itself, so one converter can process frames
+    from any video, on any device, and the RGB output lands wherever the frame's
+    samples already are. Passive and *not* thread-safe: use one
+    ``ColorConverter`` per thread.
 
     ``output_dtype`` takes the same values as ``VideoDecoder``'s:
     ``torch.uint8`` (default, ``[0, 255]``), ``torch.float32`` (``[0, 1]``), or
@@ -36,22 +38,21 @@ class ColorConverter:
     is part of the frame, like its dims and colorspace, so honoring it doesn't
     bind the converter to a stream either.
 
-    ``device`` accepts a string or a ``torch.device``. It defaults to ``None``,
-    which means the current default device (see ``torch.set_default_device``).
+    There is no ``device`` parameter: the output lands on the device the frame's
+    samples are already on, which is the device of the ``PacketDecoder`` that
+    produced it.
     """
 
     def __init__(
         self,
-        device: str | torch.device | None = None,
         output_dtype: torch.dtype | Literal["auto"] = torch.uint8,
     ):
         self._handle = _blocks_create_color_converter(
-            device=convert_device_to_str(device),
-            output_dtype=convert_output_dtype_to_str(output_dtype),
+            output_dtype=convert_output_dtype_to_str(output_dtype)
         )
 
     def convert(self, raw_frame: RawFrame) -> Frame:
-        data = _blocks_convert_frame(self._handle, raw_frame._handle)
+        data = _blocks_convert_frame(self._handle, raw_frame._handle, raw_frame._device)
         if raw_frame.storage is not None:
             # See [Standalone Frame Storage and the need for record_stream]
             raw_frame.storage.record_stream(torch.cuda.current_stream())
